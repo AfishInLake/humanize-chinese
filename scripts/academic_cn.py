@@ -569,6 +569,38 @@ if not ACADEMIC_REPLACEMENTS:
     }
 
 # Hedging expressions to inject (only multi-char phrases that read well between commas)
+# Module-level flag: whether to use stats optimization
+_USE_STATS = True
+
+
+def pick_best_replacement(sentence, old, candidates):
+    """从多个候选替换中选 perplexity 最高的（最不可预测 = 最像人写的）。
+    当 _USE_STATS 关闭、ngram_analyze 不可用、或只有单候选时回退到 random.choice。"""
+    if not _USE_STATS or not ngram_analyze or len(candidates) <= 1:
+        return random.choice(candidates)
+
+    best_candidate = candidates[0]
+    best_ppl = 0
+
+    for candidate in candidates:
+        new_sentence = sentence.replace(old, candidate, 1)
+        stats = ngram_analyze(new_sentence)
+        ppl = stats.get('perplexity', 0)
+        if ppl > best_ppl:
+            best_ppl = ppl
+            best_candidate = candidate
+
+    return best_candidate
+
+
+def _compute_burstiness(text):
+    """计算文本的 burstiness。"""
+    if not _USE_STATS or not ngram_analyze:
+        return None
+    stats = ngram_analyze(text)
+    return stats.get('burstiness', None)
+
+
 HEDGING_INJECTIONS = [
     '在一定程度上', '从某种角度看', '初步来看', '大体上',
     '就目前而言', '在多数情况下', '就现有研究来看',
@@ -588,6 +620,7 @@ def _replace_academic_phrases(text, aggressive=False):
     
     Uses per-character sentinel interleaving to prevent cascade replacements
     where a replacement's text contains another pattern as substring.
+    Uses pick_best_replacement for perplexity-optimized selection when stats enabled.
     """
     SENTINEL = '\x00'  # Null byte — won't appear in normal Chinese text
     sorted_phrases = sorted(ACADEMIC_REPLACEMENTS.keys(), key=len, reverse=True)
@@ -598,7 +631,7 @@ def _replace_academic_phrases(text, aggressive=False):
             alternatives = [alternatives]
 
         while phrase in text:
-            replacement = random.choice(alternatives)
+            replacement = pick_best_replacement(text, phrase, alternatives)
             # Interleave sentinels between each character to prevent substring matching
             protected = SENTINEL.join(replacement)
             text = text.replace(phrase, protected, 1)
@@ -737,7 +770,9 @@ def _reduce_connectors(text, aggressive=False):
 
 
 def _shorten_long_sentences(text, max_chars=90):
-    """Split overly long academic sentences at natural breakpoints."""
+    """Split overly long academic sentences at natural breakpoints, with burstiness guard."""
+    burst_before = _compute_burstiness(text)
+
     sentences = re.split(r'([。])', text)
     result = []
 
@@ -773,7 +808,15 @@ def _shorten_long_sentences(text, max_chars=90):
     if len(sentences) % 2 == 1 and sentences[-1].strip():
         result.append(sentences[-1])
 
-    return ''.join(result)
+    new_text = ''.join(result)
+
+    # Burstiness guard: if splitting made text more uniform, revert
+    if burst_before is not None:
+        burst_after = _compute_burstiness(new_text)
+        if burst_after is not None and burst_after < burst_before * 0.8:
+            return text
+
+    return new_text
 
 
 def _diversify_data_narration(text):
@@ -859,6 +902,40 @@ def humanize_academic(text, aggressive=False, seed=None):
     # Fix phrase-level duplications (e.g. "为后续研究为后续研究")
     text = re.sub(r'([\u4e00-\u9fff]{4,12})\1', r'\1', text)
 
+    # ── Final verification loop (stats-optimized) ──
+    if _USE_STATS and ngram_analyze:
+        stats = ngram_analyze(text)
+        ppl = stats.get('perplexity', 0)
+        if 0 < ppl < 200 and count_chinese(text) >= 100:
+            sentences = split_sentences(text)
+            sent_scores = []
+            for i, s in enumerate(sentences):
+                if count_chinese(s) < 5:
+                    continue
+                s_stats = ngram_analyze(s)
+                sent_scores.append((i, s_stats.get('perplexity', 0)))
+
+            if sent_scores:
+                sent_scores.sort(key=lambda x: x[1])
+                n_fix = min(5, max(1, len(sent_scores) // 5))
+
+                if seed is not None:
+                    random.seed(seed + 1)
+
+                sorted_phrases = sorted(ACADEMIC_REPLACEMENTS.keys(), key=len, reverse=True)
+                for idx, _ in sent_scores[:n_fix]:
+                    sent = sentences[idx]
+                    for phrase in sorted_phrases:
+                        if phrase in sent:
+                            alternatives = ACADEMIC_REPLACEMENTS[phrase]
+                            if isinstance(alternatives, str):
+                                alternatives = [alternatives]
+                            best = pick_best_replacement(sent, phrase, alternatives)
+                            sentences[idx] = sent.replace(phrase, best, 1)
+                            break
+
+                text = ''.join(sentences)
+
     return text.strip()
 
 
@@ -915,6 +992,8 @@ def format_detect_output(issues, metrics, score, as_json=False, score_only=False
     if metrics.get('entropy'):
         lines.append(f'信息熵: {metrics["entropy"]:.2f} | 连接词密度: {metrics["connector_density"]:.1f}/百字')
     lines.append(f'确定性表述: {metrics["certainty_count"]} | 学术留白: {metrics["hedging_count"]} | 引用: {metrics["citation_count"]}')
+    if metrics.get('perplexity'):
+        lines.append(f'困惑度: {metrics["perplexity"]:.1f} | 突发度: {metrics.get("burstiness", 0):.3f} | 段落熵CV: {metrics.get("entropy_cv", 0):.3f}')
     lines.append(f'问题总数: {total_issues}')
     lines.append('')
 
@@ -922,6 +1001,7 @@ def format_detect_output(issues, metrics, score, as_json=False, score_only=False
         'ai_academic_phrases', 'passive_overuse', 'paragraph_uniformity',
         'connector_density', 'synonym_poverty', 'citation_integration',
         'data_template', 'over_enumeration', 'perfect_conclusion', 'certainty_overuse',
+        'stat_low_perplexity', 'stat_low_burstiness', 'stat_uniform_entropy',
     ]
     for dim in dim_order:
         if dim not in issues or not issues[dim]:
@@ -1018,8 +1098,14 @@ def main():
     parser.add_argument('-s', '--score', action='store_true', help='仅输出分数')
     parser.add_argument('-v', '--verbose', action='store_true', help='详细模式')
     parser.add_argument('--seed', type=int, help='随机种子（可复现）')
+    parser.add_argument('--no-stats', action='store_true',
+                       help='跳过统计优化（困惑度反馈），回退到纯规则替换')
 
     args = parser.parse_args()
+
+    # Toggle stats optimization
+    global _USE_STATS
+    _USE_STATS = not args.no_stats
 
     # Read input
     if args.file:

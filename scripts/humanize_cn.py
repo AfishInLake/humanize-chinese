@@ -13,6 +13,18 @@ import os
 import argparse
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Import n-gram statistical model for perplexity feedback
+try:
+    from ngram_model import analyze_text as ngram_analyze
+except ImportError:
+    try:
+        from scripts.ngram_model import analyze_text as ngram_analyze
+    except ImportError:
+        ngram_analyze = None
+
+# Module-level flag: whether to use stats optimization (can be toggled by CLI)
+_USE_STATS = True
 PATTERNS_FILE = os.path.join(SCRIPT_DIR, 'patterns_cn.json')
 
 def load_config():
@@ -91,6 +103,36 @@ SCENES = {
     },
 }
 
+# ─── Stats-Optimized Selection ───
+
+def pick_best_replacement(sentence, old, candidates):
+    """从多个候选替换中选 perplexity 最高的（最不可预测 = 最像人写的）。
+    当 _USE_STATS 关闭、ngram_analyze 不可用、或只有单候选时回退到 random.choice。"""
+    if not _USE_STATS or not ngram_analyze or len(candidates) <= 1:
+        return random.choice(candidates)
+
+    best_candidate = candidates[0]
+    best_ppl = 0
+
+    for candidate in candidates:
+        new_sentence = sentence.replace(old, candidate, 1)
+        stats = ngram_analyze(new_sentence)
+        ppl = stats.get('perplexity', 0)
+        if ppl > best_ppl:
+            best_ppl = ppl
+            best_candidate = candidate
+
+    return best_candidate
+
+
+def _compute_burstiness(text):
+    """计算文本的 burstiness（困惑度变异系数），用于句式重组判断。"""
+    if not _USE_STATS or not ngram_analyze:
+        return None
+    stats = ngram_analyze(text)
+    return stats.get('burstiness', None)
+
+
 # ─── Core Transforms ───
 
 def remove_three_part_structure(text):
@@ -150,21 +192,22 @@ def replace_phrases(text, casualness=0.3):
             alternatives = [alternatives]
         
         if phrase in text:
-            # Pick replacement based on casualness
-            if casualness > 0.5 and len(alternatives) > 1:
-                replacement = random.choice(alternatives)
-            else:
-                replacement = alternatives[0]
+            # Find the sentence containing this phrase for stats-optimized selection
+            # Use pick_best_replacement to choose the highest-perplexity candidate
+            replacement = pick_best_replacement(text, phrase, alternatives)
             text = text.replace(phrase, replacement, 1)  # Replace first occurrence
             # For subsequent occurrences, use different alternatives
             while phrase in text:
-                replacement = random.choice(alternatives)
+                replacement = pick_best_replacement(text, phrase, alternatives)
                 text = text.replace(phrase, replacement, 1)
     
     return text
 
 def merge_short_sentences(text, min_len=8):
-    """Merge overly short consecutive sentences"""
+    """Merge overly short consecutive sentences, with burstiness guard."""
+    # Measure burstiness before restructuring
+    burst_before = _compute_burstiness(text)
+
     sentences = re.split(r'([。！？])', text)
     if len(sentences) < 4:
         return text
@@ -193,10 +236,20 @@ def merge_short_sentences(text, min_len=8):
         result.append(sentences[i])
         i += 1
     
-    return ''.join(result)
+    new_text = ''.join(result)
+
+    # Burstiness guard: if merging made text more uniform, revert
+    if burst_before is not None:
+        burst_after = _compute_burstiness(new_text)
+        if burst_after is not None and burst_after < burst_before * 0.8:
+            return text  # revert — merging reduced burstiness too much
+
+    return new_text
 
 def split_long_sentences(text, max_len=80):
-    """Split overly long sentences at natural breakpoints"""
+    """Split overly long sentences at natural breakpoints, with burstiness guard."""
+    burst_before = _compute_burstiness(text)
+
     sentences = re.split(r'([。！？])', text)
     result = []
     
@@ -238,7 +291,15 @@ def split_long_sentences(text, max_len=80):
     if len(sentences) % 2 == 1 and sentences[-1].strip():
         result.append(sentences[-1])
     
-    return ''.join(result)
+    new_text = ''.join(result)
+
+    # Burstiness guard: if splitting made text more uniform, revert
+    if burst_before is not None:
+        burst_after = _compute_burstiness(new_text)
+        if burst_after is not None and burst_after < burst_before * 0.8:
+            return text
+
+    return new_text
 
 def vary_paragraph_rhythm(text):
     """Break uniform paragraph lengths by merging or splitting"""
@@ -445,6 +506,48 @@ def humanize(text, scene='general', aggressive=False, seed=None):
     text = re.sub(r'，。', '。', text)          # Remove comma before period
     text = re.sub(r'。，', '。', text)          # Remove period before comma
     
+    # ── Final verification loop (stats-optimized) ──
+    # If perplexity is still too low, do a targeted second pass on worst sentences
+    if _USE_STATS and ngram_analyze:
+        stats = ngram_analyze(text)
+        ppl = stats.get('perplexity', 0)
+        # Threshold: if perplexity is in the "too smooth" zone, try to improve
+        if 0 < ppl < 200 and len(text) >= 100:
+            sentences = re.split(r'([。！？])', text)
+            # Score each sentence
+            sent_scores = []
+            for i in range(0, len(sentences) - 1, 2):
+                s = sentences[i]
+                if len(s.strip()) < 5:
+                    continue
+                s_stats = ngram_analyze(s)
+                sent_scores.append((i, s_stats.get('perplexity', 0)))
+            
+            if sent_scores:
+                # Sort by perplexity ascending (worst = most predictable first)
+                sent_scores.sort(key=lambda x: x[1])
+                # Try to improve the worst 20% (at most 5 sentences)
+                n_fix = min(5, max(1, len(sent_scores) // 5))
+                
+                # Use a different random seed for the second pass
+                if seed is not None:
+                    random.seed(seed + 1)
+                
+                for idx, _ in sent_scores[:n_fix]:
+                    sent = sentences[idx]
+                    # Try each replacement on this sentence
+                    sorted_phrases = sorted(PLAIN_REPLACEMENTS.keys(), key=len, reverse=True)
+                    for phrase in sorted_phrases:
+                        if phrase in sent:
+                            alternatives = PLAIN_REPLACEMENTS[phrase]
+                            if isinstance(alternatives, str):
+                                alternatives = [alternatives]
+                            best = pick_best_replacement(sent, phrase, alternatives)
+                            sentences[idx] = sent.replace(phrase, best, 1)
+                            break  # one fix per sentence to avoid over-rewriting
+                
+                text = ''.join(sentences)
+    
     return text.strip()
 
 # ─── Main ───
@@ -459,8 +562,14 @@ def main():
     parser.add_argument('--style', help='写作风格 (调用 style_cn.py)')
     parser.add_argument('-a', '--aggressive', action='store_true', help='激进模式')
     parser.add_argument('--seed', type=int, help='随机种子（可复现）')
+    parser.add_argument('--no-stats', action='store_true',
+                       help='跳过统计优化（困惑度反馈），回退到纯规则替换')
     
     args = parser.parse_args()
+    
+    # Toggle stats optimization
+    global _USE_STATS
+    _USE_STATS = not args.no_stats
     
     # Read input
     if args.file:
