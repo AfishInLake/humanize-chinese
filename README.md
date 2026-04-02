@@ -121,23 +121,6 @@ python scripts/humanize_cn.py text.txt -o clean.txt  # 改写
 python scripts/compare_cn.py text.txt -a       # 对比
 ```
 
-### 🔍 Sapling AI 交叉验证（新！）
-
-用第三方 AI 检测 API 交叉验证改写效果：
-
-```bash
-# 单文件验证
-python3 scripts/verify_cn.py text.txt
-
-# 改写 + 验证一步到位
-python3 scripts/verify_cn.py text.txt --rewrite -a
-
-# 对比验证
-python3 scripts/verify_cn.py before.txt after.txt
-```
-
-需要 Sapling API key（免费）：`export SAPLING_API_KEY=your_key`
-
 ### 🎨 风格转换
 
 ```bash
