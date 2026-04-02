@@ -6,6 +6,7 @@
 [![ClawHub](https://img.shields.io/badge/clawhub-humanize--chinese-blue?style=flat-square)](https://clawhub.com/skills/humanize-chinese)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.6+-blue?style=flat-square)](https://python.org)
+[![Claude Code](https://img.shields.io/badge/Claude_Code-compatible-orange?style=flat-square)](#claude-code)
 
 ---
 
@@ -67,6 +68,33 @@ npx skills add https://github.com/voidborne-d/humanize-chinese.git
 ```
 
 不需要 `pip install` 任何东西。下载就能用。
+
+---
+
+## Claude Code
+
+4 个 slash command，复制到 `.claude/commands/` 即可：
+
+```bash
+git clone https://github.com/voidborne-d/humanize-chinese.git
+cp humanize-chinese/claude-code/*.md YOUR_PROJECT/.claude/commands/
+```
+
+然后在 Claude Code 里：
+
+```
+/detect 综上所述，人工智能技术在教育领域具有重要的应用价值...
+/humanize 本文旨在探讨人工智能对高等教育教学模式的影响...
+/academic 论文.txt
+/style xiaohongshu 在当今快节奏的生活中...
+```
+
+| 命令 | 功能 |
+|------|------|
+| `/detect` | AI 痕迹检测，0-100 评分 |
+| `/humanize` | 去 AI 味改写 |
+| `/academic` | 学术论文 AIGC 降重 |
+| `/style [风格]` | 风格转换（7 种） |
 
 ---
 
