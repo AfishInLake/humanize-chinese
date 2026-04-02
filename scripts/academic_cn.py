@@ -881,6 +881,17 @@ def humanize_academic(text, aggressive=False, seed=None):
     # 1. Replace AI academic phrases
     text = _replace_academic_phrases(text, aggressive)
 
+    # 1b. Deep sentence restructuring (句级改写)
+    try:
+        from restructure_cn import deep_restructure
+    except ImportError:
+        try:
+            from scripts.restructure_cn import deep_restructure
+        except ImportError:
+            deep_restructure = None
+    if deep_restructure:
+        text = deep_restructure(text, aggressive=aggressive)
+
     # 2. Reduce connector density
     text = _reduce_connectors(text, aggressive)
 

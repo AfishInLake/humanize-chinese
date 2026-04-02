@@ -885,7 +885,18 @@ def humanize(text, scene='general', aggressive=False, seed=None):
     text = remove_three_part_structure(text)
     text = replace_phrases(text, casualness)
     
-    # Pass 2: Sentence restructuring
+    # Pass 2: Deep sentence restructuring (句级改写)
+    try:
+        from restructure_cn import deep_restructure
+    except ImportError:
+        try:
+            from scripts.restructure_cn import deep_restructure
+        except ImportError:
+            deep_restructure = None
+    if deep_restructure:
+        text = deep_restructure(text, aggressive=aggressive)
+
+    # Pass 2b: Sentence merge/split (original)
     if config.get('merge_short', False):
         text = merge_short_sentences(text)
     if config.get('split_long', False):
