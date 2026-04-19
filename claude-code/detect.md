@@ -1,6 +1,6 @@
-# /detect — 检测中文文本的 AI 痕迹
+# /detect — 检测中文文本的 AI 痕迹（v3.0）
 
-Detect AI-generated patterns in Chinese text. Score 0-100.
+Detect AI-generated patterns in Chinese text. Score 0-100, 20+ rule dimensions plus 8 HC3-calibrated statistical features (sentence-length CV, short-sentence fraction, comma density, perplexity, GLTR rank buckets, DivEye skew/kurt).
 
 ## Usage
 
@@ -15,15 +15,17 @@ The user provides Chinese text (directly or as a file path). Run detection and r
    DETECT_EOF
    ```
 
-2. Run detection with verbose mode:
+2. Run detection with verbose mode (use unified CLI if available, else script):
    ```bash
+   $SKILL_DIR/humanize detect /tmp/detect_input.txt -v
+   # or equivalently:
    python $SKILL_DIR/scripts/detect_cn.py /tmp/detect_input.txt -v
    ```
 
 3. Report the results clearly:
    - Overall score and level (LOW/MEDIUM/HIGH/VERY HIGH)
    - Top suspicious sentences
-   - Key AI patterns found
+   - Key AI patterns found (rule-based + statistical indicators)
 
 ## Score Reference
 
@@ -33,6 +35,19 @@ The user provides Chinese text (directly or as a file path). Run detection and r
 | 25–49 | 🟡 MEDIUM | Some AI traces |
 | 50–74 | 🟠 HIGH | Likely AI-generated |
 | 75–100 | 🔴 VERY HIGH | Almost certainly AI |
+
+## Statistical Indicators (v3.0)
+
+v3.0 added strong statistical signals calibrated on HC3-Chinese 300+300 samples:
+
+| Indicator | Cohen's d | Description |
+|-----------|-----------|-------------|
+| `stat_low_sentence_length_cv` | 1.22 | AI writes formulaic 15-25 char sentences |
+| `stat_low_short_sentence_fraction` | 1.21 | Humans write short sentences; AI rarely |
+| `stat_low_perplexity` | 0.47 | Low character-level trigram perplexity |
+| `stat_high_top10_bucket` | 0.44 | AI picks top-probability characters |
+| `stat_low_surprisal_skew` | 0.41 | DivEye feature |
+| `stat_low_comma_density` | 0.47 | AI writes longer uninterrupted clauses |
 
 ## Example
 

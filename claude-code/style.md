@@ -14,13 +14,16 @@ Transform Chinese text into a specific writing style.
 
 1. Parse the style name (first argument) and the text (rest).
 
-2. Save and run:
+2. Save and run (v3.0 automatically runs humanize first to strip AI words, then applies style):
    ```bash
    cat > /tmp/style_input.txt << 'STY_EOF'
    [user's text here]
    STY_EOF
+   $SKILL_DIR/humanize style /tmp/style_input.txt --style [STYLE] -o /tmp/style_output.txt
+   # or:
    python $SKILL_DIR/scripts/style_cn.py /tmp/style_input.txt --style [STYLE] -o /tmp/style_output.txt
    ```
+   Add `--no-humanize` to skip the humanize pre-pass.
 
 3. Show the transformed text.
 

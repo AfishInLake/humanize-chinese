@@ -1,11 +1,13 @@
 ---
 name: humanize-chinese
 description: >
-  Detect and humanize AI-generated Chinese text. 20+ detection categories, weighted 0-100 scoring
-  with sentence-level analysis, 7 style transforms (casual/zhihu/xiaohongshu/wechat/academic/literary/weibo),
-  sentence restructuring, context-aware replacement. Academic paper AIGC reduction for CNKI/VIP/Wanfang
-  (知网/维普/万方 AIGC 检测降重), 10 academic detection dimensions, 120+ scholarly expression replacements,
-  hedging language injection. Pure Python, no dependencies. v2.1.0
+  Detect and humanize AI-generated Chinese text. 20+ rule detection categories plus 8 HC3-calibrated
+  statistical features (sentence-length CV Cohen's d=1.22, short-sentence fraction d=1.21, comma density,
+  GLTR rank buckets, DivEye surprisal). Unified CLI: ./humanize {detect,rewrite,academic,style,compare}.
+  7 style transforms (casual/zhihu/xiaohongshu/wechat/academic/literary/weibo), 40 paraphrase templates,
+  122 academic replacements, CiLin synonym expansion with semantic filter. Academic paper AIGC reduction
+  for CNKI/VIP/Wanfang (知网/维普/万方 AIGC 检测降重), 11 academic detection dimensions. Pure Python,
+  no dependencies. v3.0.0 — HC3 accuracy 73%, humanize avg delta +4.2 on HC3-Chinese 100-sample.
   Use when user says: "去AI味", "降AIGC", "人性化文本", "humanize chinese", "AI检测", "AIGC降重",
   "去除AI痕迹", "文本改写", "论文降重", "知网检测", "维普检测", "AI写作检测", "让文字更自然",
   "detect AI text", "humanize text", "reduce AIGC score", "make text human-like",
@@ -17,35 +19,51 @@ allowed-tools:
   - exec
 ---
 
-# Humanize Chinese AI Text v2.1
+# Humanize Chinese AI Text v3.0
 
-检测和改写中文 AI 生成文本的完整工具链。可独立运行（CLI），也可作为 LLM prompt 指南使用。
+检测和改写中文 AI 生成文本的完整工具链。可独立运行（统一 CLI 或独立脚本），也可作为 LLM prompt 指南使用。
+
+**v3.0 亮点：** HC3 accuracy 51→73% (+22 pts)；句长 CV Cohen's d=1.22 最强统计特征；40 paraphrase 模板 + 122 学术替换；统一 CLI + `--quick` 18× 速度。
 
 ## CLI Tools
+
+### 统一 CLI（推荐）
+
+```bash
+./humanize detect 文本.txt -v                      # 检测 + 详细
+./humanize rewrite 文本.txt -o 改后.txt --quick    # 快速改写（18× 速度）
+./humanize academic 论文.txt -o 改后.txt --compare  # 学术降重 + 双评分对比
+./humanize style 文本.txt --style xiaohongshu      # 风格转换
+./humanize compare 文本.txt -a                      # 前后对比
+```
+
+### 独立脚本形式（等价）
 
 所有脚本在 `scripts/` 目录下，纯 Python，无依赖。
 
 ```bash
-# 检测 AI 模式（20+ 维度，0-100 分）
+# 检测 AI 模式（20+ 规则维度 + 8 统计特征，0-100 分）
 python scripts/detect_cn.py text.txt
 python scripts/detect_cn.py text.txt -v          # 详细 + 最可疑句子
 python scripts/detect_cn.py text.txt -s           # 仅评分
 python scripts/detect_cn.py text.txt -j           # JSON 输出
 
-# 改写
+# 改写（三档自适应：conservative/moderate/full）
 python scripts/humanize_cn.py text.txt -o clean.txt
-python scripts/humanize_cn.py text.txt --scene social -a   # 社交场景 + 激进模式
-python scripts/humanize_cn.py text.txt --style xiaohongshu # 先改写再转风格
+python scripts/humanize_cn.py text.txt --scene social -a   # 社交 + 激进
+python scripts/humanize_cn.py text.txt --quick             # 18× 速度，纯替换
+python scripts/humanize_cn.py text.txt --cilin             # 启用 CiLin 同义词扩展
 
-# 风格转换
+# 风格转换（先自动 humanize 再套风格）
 python scripts/style_cn.py text.txt --style zhihu -o out.txt
 
 # 前后对比
 python scripts/compare_cn.py text.txt --scene tech -a
 
-# 学术论文 AIGC 降重
+# 学术论文 AIGC 降重（11 维度 + 扩散度 + 双评分）
 python scripts/academic_cn.py paper.txt -o clean.txt --compare
 python scripts/academic_cn.py paper.txt -o clean.txt -a --compare  # 激进
+python scripts/academic_cn.py paper.txt -o clean.txt --quick       # 快速模式
 ```
 
 ### 评分标准
@@ -69,20 +87,36 @@ python scripts/academic_cn.py paper.txt -o clean.txt -a --compare  # 激进
 | `--seed N` | 固定随机种子 |
 | `--scene` | general / social / tech / formal / chat |
 | `--style` | casual / zhihu / xiaohongshu / wechat / academic / literary / weibo |
-| `--compare` | 前后对比 |
+| `--compare` | 前后对比（学术双评分） |
+| `--quick` | 快速模式（跳过统计优化，18× 速度） |
+| `--cilin` | 启用 CiLin 同义词扩展（humanize，38873 词） |
+| `--no-humanize` | style 转换前不先去 AI 词 |
 
 ### 工作流
 
 ```bash
 # 1. 检测
-python scripts/detect_cn.py document.txt -v
+./humanize detect document.txt -v
 # 2. 改写 + 对比
-python scripts/compare_cn.py document.txt -a -o clean.txt
+./humanize compare document.txt -a -o clean.txt
 # 3. 验证
-python scripts/detect_cn.py clean.txt -s
+./humanize detect clean.txt -s
 # 4. 可选：转风格
-python scripts/style_cn.py clean.txt --style zhihu -o final.txt
+./humanize style clean.txt --style zhihu -o final.txt
 ```
+
+### HC3-Chinese 基准测试
+
+v3.0 所有阈值都基于 [HC3-Chinese](https://github.com/Hello-SimpleAI/chatgpt-comparison-detection) 300+300 人类/AI 样本的 Cohen's d 校准：
+
+- 句长变异系数 CV: d = 1.22（最强单信号）
+- 短句占比 (< 10 字): d = 1.21
+- 困惑度: d = 0.47
+- GLTR top-10 bucket: d = 0.44
+- DivEye skew / kurt: d = 0.41 / 0.29
+- 逗号密度: d = -0.47
+
+100 样本回归测试：73% 正确分离率 / 9.9 分差距 / +4.2 平均降幅。
 
 ---
 
@@ -216,10 +250,16 @@ python scripts/style_cn.py clean.txt --style zhihu -o final.txt
 改写完成后，用 CLI 工具验证效果：
 
 ```bash
-python scripts/detect_cn.py output.txt -s
+./humanize detect output.txt -s
 ```
 
-目标：通用文本降到 25 分以下，学术论文降到 30 分以下。
+目标（基于 v3.0 的强化检测器）：
+- 通用文本降到 50 分以下（MEDIUM 区间）
+- 学术论文降到 40 分以下（学术专用），通用评分降到 35 分以下
+- 真实 ChatGPT 输出 baseline 通常已在 5-25 分，改写后能降 3-10 分就算成功
+- 刻板化 AI 样板文（论文模板/八股）可以看到 50+ 分降幅
+
+注：v3.0 detect_cn 加了句长 CV + 短句占比 + 逗号密度三个强指标，相同文本的分数会比 v2.x 略高（更准确），这是正常现象。
 
 ---
 
