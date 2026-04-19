@@ -539,6 +539,17 @@ def _merge_short_sentences_in_paragraph(text):
     if len(sentences) < 2:
         return text
 
+    # D-7 (cycle 33): don't merge if paragraph already has natural short-sentence
+    # variety — merging destroys the human short_frac signature and triggers
+    # low_short_sentence_fraction + low_sentence_length_cv indicators.
+    # Found via HC3 regression diagnosis: sample #90 regressed +15 because
+    # humanize merged away natural short sentences.
+    cn_lens = [len(re.findall(r'[\u4e00-\u9fff]', s)) for s, _ in sentences]
+    if cn_lens:
+        short_frac = sum(1 for l in cn_lens if l < 10) / len(cn_lens)
+        if short_frac >= 0.20:  # text already human-like burstiness
+            return text
+
     result = []
     i = 0
     while i < len(sentences):
