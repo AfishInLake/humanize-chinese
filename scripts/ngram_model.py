@@ -657,6 +657,32 @@ def compute_sentence_length_features(text):
     }
 
 
+# ─── MATTR / lexical diversity (E-8 / PATTR-lite per arxiv 2507.15092) ───
+#
+# HC3 300+300 calibration: char_mattr(window=100) Cohen's d = 0.700 (AI mean
+# 0.6274, human mean 0.6805). AI text uses a narrower character repertoire
+# per 100-char window — human Chinese writing varies vocabulary more.
+# Measured directly from Chinese chars only (skip ascii / punct / digits).
+
+def compute_char_mattr(text, window=100):
+    """Moving-Average Type-Token Ratio over Chinese chars.
+
+    Windows of `window` chars with 50% overlap; return mean of
+    (unique_chars / window) across windows.
+
+    Returns 0.0 for texts shorter than one window (caller should gate).
+    """
+    chars = [c for c in text if '\u4e00' <= c <= '\u9fff']
+    if len(chars) < window:
+        return 0.0
+    step = max(1, window // 2)
+    ratios = []
+    for i in range(0, len(chars) - window + 1, step):
+        seg = chars[i:i + window]
+        ratios.append(len(set(seg)) / len(seg))
+    return sum(ratios) / len(ratios) if ratios else 0.0
+
+
 # ─── Burstiness ───
 
 def compute_burstiness(text, window_size=50):
@@ -857,6 +883,9 @@ def analyze_text(text):
     # Binoculars dual ngram ratio (B-path cycle 23, gated on secondary ngram file)
     bino = compute_binoculars_ratio(text)
 
+    # Char-level MATTR (E-8, arxiv 2507.15092 PATTR-lite)
+    char_mattr = compute_char_mattr(text, window=100)
+
     # Thresholds — conservative, designed for character-level n-gram model.
     #
     # With a small corpus-based model, perplexity direction depends on text style.
@@ -948,6 +977,15 @@ def analyze_text(text):
         # the stat scoring architecture allows more simultaneous indicators
         # (Ghostbuster-style LR ensemble or sigmoid-soft-cap).
         'low_binoculars_diff': False,
+        # MATTR lexical diversity (E-8 cycle 40, arxiv 2507.15092 PATTR-lite).
+        # HC3 300+300: AI mean 0.6274, human mean 0.6805, Cohen's d = 0.700.
+        # Threshold 0.58 — tighter than midpoint 0.65 because midpoint flagged
+        # too many humans and dropped correct 75→73%. Even at 0.58 still
+        # dropped correct to 74%. MATTR correlates with other stat indicators
+        # (perplexity, gltr) enough to contribute marginal negative under the
+        # 40-pt stat cap. Kept function + metric + wiring for future Ghostbuster
+        # LR ensemble; indicator disabled for now like binoculars/curvature.
+        'low_char_mattr': False,
     }
 
     return {
@@ -962,6 +1000,7 @@ def analyze_text(text):
         'trans': trans,
         'curv': curv,
         'bino': bino,
+        'char_mattr': char_mattr,
         'indicators': indicators,
         'details': {
             'perplexity_result': {

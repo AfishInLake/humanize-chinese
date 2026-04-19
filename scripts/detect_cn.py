@@ -430,6 +430,14 @@ def detect_patterns(text):
                 'text': f'双 ngram 对数概率差 {bi.get("mean_lp_diff", 0):.2f}（< -2.2，文本风格过于贴近"平均中文"）',
                 'severity': 'statistical',
             })
+
+        # Char-level MATTR lexical diversity (HC3 d=0.70, E-8 cycle 40)
+        if indicators.get('low_char_mattr'):
+            mattr = ngram_stats.get('char_mattr', 0)
+            issues['stat_low_char_mattr'].append({
+                'text': f'字符多样性 MATTR {mattr:.3f}（< 0.65，窗内用字过于集中）',
+                'severity': 'statistical',
+            })
     
     # ── Compute metrics ──
     metrics = {
@@ -474,6 +482,7 @@ STATISTICAL_WEIGHTS = {
     'stat_high_transition_density': 8,        # d=+0.62 tightened thr (HC3 2026-04-19, CNKI 语义逻辑链)
     'stat_high_curvature': 6,                 # d=+0.77 DetectGPT-lite (HC3 2026-04-19)
     'stat_low_binoculars_diff': 6,            # d=1.09 Binoculars dual ngram (B-path 2026-04-19, low weight to avoid saturating 40-pt cap)
+    'stat_low_char_mattr': 8,                 # d=0.70 MATTR lexical diversity (E-8 2026-04-20, PATTR-lite)
     'stat_low_perplexity': 10,
     'stat_high_top10_bucket': 10,
     'stat_low_surprisal_skew': 9,
@@ -615,6 +624,7 @@ CATEGORY_NAMES = {
     'stat_high_transition_density': ('📊', '过渡词过密'),
     'stat_high_curvature': ('📊', '局部曲率高'),
     'stat_low_binoculars_diff': ('📊', '双ngram对齐度高'),
+    'stat_low_char_mattr': ('📊', '字符多样性偏低'),
 }
 
 def format_output(issues, metrics, score, sentences=None, as_json=False, score_only=False, verbose=False):
@@ -668,7 +678,7 @@ def format_output(issues, metrics, score, sentences=None, as_json=False, score_o
                 'stat_low_surprisal_skew', 'stat_low_surprisal_kurt', 'stat_high_top10_bucket',
                 'stat_low_sentence_length_cv', 'stat_low_short_sentence_fraction',
                 'stat_low_comma_density', 'stat_high_transition_density', 'stat_high_curvature',
-                'stat_low_binoculars_diff',
+                'stat_low_binoculars_diff', 'stat_low_char_mattr',
                 'uniform_paragraphs', 'low_burstiness', 'emotional_flatness', 'repetitive_starters', 'low_entropy']:
         if cat not in issues or not issues[cat]:
             continue
