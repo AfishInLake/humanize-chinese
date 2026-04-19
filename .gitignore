@@ -1,5 +1,11 @@
 scripts/__pycache__/
+evals/__pycache__/
 
 # Local-only: 20MB 2nd ngram trained on HC3 human corpus (B-path)
 # Regenerate via: python scripts/train_ngram_human.py
 scripts/ngram_freq_cn_human.json
+
+# Local-only: ~140KB gzip seed corpora for compression-ratio CI oracle (E-6)
+# Regenerate via: python evals/compression_oracle.py --build-seeds
+evals/compression_ai_seed.txt
+evals/compression_human_seed.txt
