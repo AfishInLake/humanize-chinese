@@ -224,7 +224,10 @@ WORD_SYNONYMS = {
     '同时': ['与此同时', '此外', '另外', '并且'],
     '通过': ['借助', '凭借', '经由', '依靠'],
     '根据': ['按照', '依据', '参照', '依照'],
-    '有效': ['管用', '奏效', '见效', '起作用'],
+    # '有效' removed: word is often adjectival (有效证件/有效身份/有效期),
+    # and every alternative (管用/奏效/见效/起作用) is a verb/predicate that
+    # breaks attributive usage (奏效身份证件). Would need word-level POS
+    # tagging to handle safely.
     '基于': ['立足于', '依托', '以…为基础', '仰赖'],
     '对于': ['针对', '就', '关于', '面对'],
     '非常': ['极其', '十分', '很', '格外'],
@@ -1110,7 +1113,7 @@ def diversify_vocabulary(text):
         '具有': ['有', '拥有', '带有'],
         '进一步': ['更', '再', '深入'],
         '不断': ['持续', '一直', '始终'],
-        '有效': ['管用', '见效', '奏效'],
+        # '有效' skipped: attributive/adj usage (有效证件) breaks with verb substitutes
         '积极': ['主动', '热心'],
         '促进': ['推动', '带动'],
         '加强': ['强化', '增强'],
