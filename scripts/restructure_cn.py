@@ -133,9 +133,9 @@ def _build_templates():
         ]
     ))
 
-    # ── 13. X是Y的重要/关键Z ──
+    # ── 13. X是Y的重要/关键Z ── (W bounded by commas to avoid crossing clauses)
     templates.append((
-        re.compile(r'(?P<X>[^，,。]{2,15})是(?P<Y>[^，,。]{2,12})的(?P<Z>重要|关键|核心|主要)(?P<W>[^。！？]{1,8})'),
+        re.compile(r'(?P<X>[^，,。]{2,15})是(?P<Y>[^，,。]{2,12})的(?P<Z>重要|关键|核心|主要)(?P<W>[^，,。！？]{1,5})'),
         [
             lambda m: f'对于{m.group("Y")}来说，{m.group("X")}的{m.group("W")}地位{m.group("Z").replace("重要","不可小觑").replace("关键","至关重要").replace("核心","居于核心").replace("主要","相当突出")}',
         ]
