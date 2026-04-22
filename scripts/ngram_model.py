@@ -494,6 +494,75 @@ def _load_human_freq():
     return _HUMAN_FREQ_CACHE
 
 
+_WIKI_FREQ_CACHE = None
+_WIKI_FREQ_FILE = os.path.join(SCRIPT_DIR, 'ngram_freq_cn_wiki.json')
+
+
+def _load_wiki_freq():
+    """Lazy-load Wikipedia ngram frequency table (F-3, 2026-04-22).
+    Returns None if file missing — graceful fallback when feature is disabled."""
+    global _WIKI_FREQ_CACHE
+    if _WIKI_FREQ_CACHE is not None:
+        return _WIKI_FREQ_CACHE
+    if not os.path.exists(_WIKI_FREQ_FILE):
+        _WIKI_FREQ_CACHE = None
+        return None
+    with open(_WIKI_FREQ_FILE, 'r', encoding='utf-8') as f:
+        _WIKI_FREQ_CACHE = json.load(f)
+    for key in ('unigrams', 'bigrams', 'trigrams'):
+        table = _WIKI_FREQ_CACHE.get(key, {})
+        _WIKI_FREQ_CACHE[key] = {k: int(v) for k, v in table.items()}
+    return _WIKI_FREQ_CACHE
+
+
+def compute_wiki_lp_diff(text):
+    """Compute Wikipedia-corpus log-prob divergences for Binoculars-style signal.
+
+    Returns:
+      wiki_vs_human: mean(lp_wiki) - mean(lp_human)
+      wiki_vs_primary: mean(lp_primary) - mean(lp_wiki)
+
+    HC3 300+300 pilot Cohen's d:
+      wiki_vs_human  = 1.58 (strongest seen)
+      wiki_vs_primary = 1.13
+
+    Interpretation: AI text sits closer to encyclopedic Wikipedia distribution
+    than casual human Q&A does, providing an orthogonal signal to bino_lp_diff.
+    """
+    wiki_freq = _load_wiki_freq()
+    human_freq = _load_human_freq()
+    primary_freq = _load_freq()
+    if wiki_freq is None or human_freq is None:
+        return {'available': False, 'char_count': 0,
+                'wiki_vs_human': 0.0, 'wiki_vs_primary': 0.0}
+
+    chars = _extract_chinese(text)
+    if len(chars) < 30:
+        return {'available': True, 'char_count': len(chars),
+                'wiki_vs_human': 0.0, 'wiki_vs_primary': 0.0}
+
+    p_sum = w_sum = h_sum = 0.0
+    n = 0
+    for i in range(2, len(chars)):
+        p_sum += _trigram_log_prob(chars[i-2], chars[i-1], chars[i], primary_freq)
+        w_sum += _trigram_log_prob(chars[i-2], chars[i-1], chars[i], wiki_freq)
+        h_sum += _trigram_log_prob(chars[i-2], chars[i-1], chars[i], human_freq)
+        n += 1
+    if n == 0:
+        return {'available': True, 'char_count': len(chars),
+                'wiki_vs_human': 0.0, 'wiki_vs_primary': 0.0}
+
+    p_avg = p_sum / n
+    w_avg = w_sum / n
+    h_avg = h_sum / n
+    return {
+        'available': True,
+        'char_count': len(chars),
+        'wiki_vs_human': w_avg - h_avg,
+        'wiki_vs_primary': p_avg - w_avg,
+    }
+
+
 def compute_binoculars_ratio(text):
     """Compute Binoculars-style log-prob divergence between primary and human ngrams.
 
@@ -906,6 +975,9 @@ def analyze_text(text):
     # Binoculars dual ngram ratio (B-path cycle 23, gated on secondary ngram file)
     bino = compute_binoculars_ratio(text)
 
+    # Wikipedia ngram divergence (F-3 2026-04-22, gated on wiki ngram file)
+    wiki = compute_wiki_lp_diff(text)
+
     # Char-level MATTR (E-8, arxiv 2507.15092 PATTR-lite)
     char_mattr = compute_char_mattr(text, window=100)
 
@@ -1029,6 +1101,7 @@ def analyze_text(text):
         'trans': trans,
         'curv': curv,
         'bino': bino,
+        'wiki': wiki,
         'char_mattr': char_mattr,
         'uni_ppl': uni_ppl,
         'uni_tri_ratio': uni_tri_ratio,
@@ -1075,7 +1148,9 @@ LR_FEATURE_NAMES = (
     'trans_density',
     'curv_mean',
     'bino_lp_diff',
-    'uni_tri_ratio',   # F-2 multi-scale ratio, HC3 d=0.31
+    'uni_tri_ratio',        # F-2 multi-scale ratio, HC3 d=0.31
+    'wiki_vs_human',        # F-3 2026-04-22, HC3 d=1.58
+    'wiki_vs_primary',      # F-3 2026-04-22, HC3 d=1.13
 )
 
 
@@ -1126,10 +1201,12 @@ def compute_lr_score(text_or_analysis, coef_path=None, scene='general'):
     weights = coef['coef']
     intercept = coef['intercept']
 
-    # Standardize then compute logit
+    # Standardize then compute logit. Slice to len(weights) so older coef files
+    # (trained with fewer features) remain compatible with newer feature vectors.
+    n = min(len(weights), len(vec))
     standardized = [(vec[i] - means[i]) / (scales[i] if scales[i] else 1.0)
-                    for i in range(len(vec))]
-    logit = intercept + sum(standardized[i] * weights[i] for i in range(len(weights)))
+                    for i in range(n)]
+    logit = intercept + sum(standardized[i] * weights[i] for i in range(n))
     import math as _m
     # Clamp to avoid overflow
     if logit > 500:
@@ -1140,7 +1217,7 @@ def compute_lr_score(text_or_analysis, coef_path=None, scene='general'):
         p_ai = 1.0 / (1.0 + _m.exp(-logit))
     score = round(100 * p_ai)
 
-    contribs = [(names[i], standardized[i] * weights[i]) for i in range(len(weights))]
+    contribs = [(names[i], standardized[i] * weights[i]) for i in range(n)]
     contribs.sort(key=lambda x: -abs(x[1]))
 
     return {
@@ -1175,6 +1252,7 @@ def extract_feature_vector(text_or_analysis):
     trans = analysis.get('trans', {}) or {}
     curv = analysis.get('curv', {}) or {}
     bino = analysis.get('bino', {}) or {}
+    wiki = analysis.get('wiki', {}) or {}
 
     vec = [
         float(analysis.get('perplexity') or 0.0),
@@ -1196,6 +1274,8 @@ def extract_feature_vector(text_or_analysis):
         float(curv.get('curvature_mean') or 0.0),
         float(bino.get('mean_lp_diff') or 0.0),
         float(analysis.get('uni_tri_ratio') or 0.0),
+        float(wiki.get('wiki_vs_human') or 0.0),
+        float(wiki.get('wiki_vs_primary') or 0.0),
     ]
     return vec, list(LR_FEATURE_NAMES)
 

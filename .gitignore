@@ -5,6 +5,10 @@ evals/__pycache__/
 # Regenerate via: python scripts/train_ngram_human.py
 scripts/ngram_freq_cn_human.json
 
+# Local-only: ~7MB 3rd ngram trained on Chinese Wikipedia academic corpus
+# Regenerate via: python scripts/train_ngram_wiki.py
+scripts/ngram_freq_cn_wiki.json
+
 # Local-only: ~140KB gzip seed corpora for compression-ratio CI oracle (E-6)
 # Regenerate via: python evals/compression_oracle.py --build-seeds
 evals/compression_ai_seed.txt
