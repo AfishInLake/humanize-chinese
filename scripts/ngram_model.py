@@ -515,6 +515,62 @@ def _load_wiki_freq():
     return _WIKI_FREQ_CACHE
 
 
+_NEWS_FREQ_CACHE = None
+_NEWS_FREQ_FILE = os.path.join(SCRIPT_DIR, 'ngram_freq_cn_news.json')
+
+
+def _load_news_freq():
+    """Lazy-load news ngram (THUCNews-derived). Returns None if missing."""
+    global _NEWS_FREQ_CACHE
+    if _NEWS_FREQ_CACHE is not None:
+        return _NEWS_FREQ_CACHE
+    if not os.path.exists(_NEWS_FREQ_FILE):
+        _NEWS_FREQ_CACHE = None
+        return None
+    with open(_NEWS_FREQ_FILE, 'r', encoding='utf-8') as f:
+        _NEWS_FREQ_CACHE = json.load(f)
+    for key in ('unigrams', 'bigrams', 'trigrams'):
+        table = _NEWS_FREQ_CACHE.get(key, {})
+        _NEWS_FREQ_CACHE[key] = {k: int(v) for k, v in table.items()}
+    return _NEWS_FREQ_CACHE
+
+
+def compute_news_lp_diff(text):
+    """News-vs-{human, wiki} log-prob divergences.
+
+    HC3 300+300 pilot Cohen's d: news_vs_human=0.71, news_vs_wiki=0.70.
+    Register: AI is closer to news (formal journalistic) than casual human Q&A,
+    and more wiki-like than news-like (which differs from Q&A register).
+    """
+    news = _load_news_freq()
+    human = _load_human_freq()
+    wiki = _load_wiki_freq()
+    if news is None or human is None or wiki is None:
+        return {'available': False, 'news_vs_human': 0.0, 'news_vs_wiki': 0.0}
+
+    chars = _extract_chinese(text)
+    if len(chars) < 30:
+        return {'available': True, 'news_vs_human': 0.0, 'news_vs_wiki': 0.0}
+
+    n_sum = h_sum = w_sum = 0.0
+    n = 0
+    for i in range(2, len(chars)):
+        n_sum += _trigram_log_prob(chars[i-2], chars[i-1], chars[i], news)
+        h_sum += _trigram_log_prob(chars[i-2], chars[i-1], chars[i], human)
+        w_sum += _trigram_log_prob(chars[i-2], chars[i-1], chars[i], wiki)
+        n += 1
+    if n == 0:
+        return {'available': True, 'news_vs_human': 0.0, 'news_vs_wiki': 0.0}
+    n_avg = n_sum / n
+    h_avg = h_sum / n
+    w_avg = w_sum / n
+    return {
+        'available': True,
+        'news_vs_human': n_avg - h_avg,
+        'news_vs_wiki': n_avg - w_avg,
+    }
+
+
 def compute_wiki_lp_diff(text):
     """Compute Wikipedia-corpus log-prob divergences for Binoculars-style signal.
 
@@ -978,6 +1034,9 @@ def analyze_text(text):
     # Wikipedia ngram divergence (F-3 2026-04-22, gated on wiki ngram file)
     wiki = compute_wiki_lp_diff(text)
 
+    # News ngram divergence (F-11 2026-04-22, THUCNews-derived)
+    news = compute_news_lp_diff(text)
+
     # Char-level MATTR (E-8, arxiv 2507.15092 PATTR-lite)
     char_mattr = compute_char_mattr(text, window=100)
 
@@ -1102,6 +1161,7 @@ def analyze_text(text):
         'curv': curv,
         'bino': bino,
         'wiki': wiki,
+        'news': news,
         'char_mattr': char_mattr,
         'uni_ppl': uni_ppl,
         'uni_tri_ratio': uni_tri_ratio,
@@ -1151,6 +1211,8 @@ LR_FEATURE_NAMES = (
     'uni_tri_ratio',        # F-2 multi-scale ratio, HC3 d=0.31
     'wiki_vs_human',        # F-3 2026-04-22, HC3 d=1.58
     'wiki_vs_primary',      # F-3 2026-04-22, HC3 d=1.13
+    'news_vs_human',        # F-11 2026-04-22, HC3 d=0.71
+    'news_vs_wiki',         # F-11 2026-04-22, HC3 d=0.70
 )
 
 
@@ -1253,6 +1315,7 @@ def extract_feature_vector(text_or_analysis):
     curv = analysis.get('curv', {}) or {}
     bino = analysis.get('bino', {}) or {}
     wiki = analysis.get('wiki', {}) or {}
+    news = analysis.get('news', {}) or {}
 
     vec = [
         float(analysis.get('perplexity') or 0.0),
@@ -1276,6 +1339,8 @@ def extract_feature_vector(text_or_analysis):
         float(analysis.get('uni_tri_ratio') or 0.0),
         float(wiki.get('wiki_vs_human') or 0.0),
         float(wiki.get('wiki_vs_primary') or 0.0),
+        float(news.get('news_vs_human') or 0.0),
+        float(news.get('news_vs_wiki') or 0.0),
     ]
     return vec, list(LR_FEATURE_NAMES)
 

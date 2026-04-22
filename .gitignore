@@ -9,6 +9,10 @@ scripts/ngram_freq_cn_human.json
 # Regenerate via: python scripts/train_ngram_wiki.py
 scripts/ngram_freq_cn_wiki.json
 
+# Local-only: ~6MB 4th ngram trained on THUCNews subset
+# Regenerate via: python scripts/train_ngram_news.py
+scripts/ngram_freq_cn_news.json
+
 # Local-only: ~140KB gzip seed corpora for compression-ratio CI oracle (E-6)
 # Regenerate via: python evals/compression_oracle.py --build-seeds
 evals/compression_ai_seed.txt
