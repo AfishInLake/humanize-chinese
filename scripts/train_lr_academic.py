@@ -61,6 +61,25 @@ def load_hc3_ai(path, n=500, seed=42, min_cn_chars=100):
     return texts[:n]
 
 
+def load_hc3_human(path, n=200, seed=43, min_cn_chars=200):
+    """HC3 human answers — used as additional 'human' samples in academic LR
+    to break the Wikipedia label leakage (where unique Wiki vocabulary becomes
+    a shortcut for the human class). Slight higher min length to lean academic."""
+    rng = random.Random(seed)
+    texts = []
+    with open(path, encoding='utf-8') as f:
+        for line in f:
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            for a in row.get('human_answers', []) or []:
+                if a and sum(1 for c in a if '\u4e00' <= c <= '\u9fff') >= min_cn_chars:
+                    texts.append(a)
+    rng.shuffle(texts)
+    return texts[:n]
+
+
 def standardize(X_train, X_holdout):
     n_feat = len(X_train[0])
     means = [mean(x[f] for x in X_train) for f in range(n_feat)]
@@ -79,20 +98,35 @@ def main():
 
     print(f'Loading academic chunks from {WIKI_PATH}...')
     academic_chunks = load_wiki_academic_chunks(WIKI_PATH)
-    print(f'  Got {len(academic_chunks)} academic chunks')
+    print(f'  Got {len(academic_chunks)} Wikipedia academic chunks')
     if len(academic_chunks) < 100:
         print('Warning: very few academic chunks, training may be unstable')
+
+    print(f'Loading HC3 human texts (to dilute Wikipedia signature)...')
+    hc3_humans = load_hc3_human(HC3_PATH, n=args.n_ai // 2, seed=args.seed + 1)
+    print(f'  Got {len(hc3_humans)} HC3 human samples')
 
     print(f'Loading HC3 AI texts (n={args.n_ai})...')
     ai_texts = load_hc3_ai(HC3_PATH, n=args.n_ai, seed=args.seed)
     print(f'  Got {len(ai_texts)} AI texts')
 
-    # Balance to min count
-    n = min(len(academic_chunks), len(ai_texts))
+    # Mix Wikipedia + HC3 humans as the 'human' label set so the LR cannot
+    # use Wikipedia-specific signatures (esp. bino_lp_diff) as a shortcut.
+    # Cap academic chunks so the mix is roughly 50/50 wiki / hc3-human.
     rng = random.Random(args.seed)
     rng.shuffle(academic_chunks)
-    academic_chunks = academic_chunks[:n]
+    target_human = min(len(academic_chunks), len(ai_texts))
+    n_wiki = target_human // 2
+    n_hc3h = target_human - n_wiki
+    if len(hc3_humans) < n_hc3h:
+        n_hc3h = len(hc3_humans)
+    human_mix = academic_chunks[:n_wiki] + hc3_humans[:n_hc3h]
+    rng.shuffle(human_mix)
+
+    n = min(len(human_mix), len(ai_texts))
+    academic_chunks = human_mix[:n]
     ai_texts = ai_texts[:n]
+    print(f'  Human side: {n_wiki} Wikipedia + {n_hc3h} HC3 humans = {n} mixed')
     print(f'  Balanced to {n} per class')
 
     print(f'Extracting features...')
