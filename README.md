@@ -405,6 +405,15 @@ python evals/run_hc3_benchmark.py --n 200 --seed 42
 
 ---
 
+## 同源工具
+
+同一个作者的 toolkit 里还有两个处理「AI 留下的痕迹」的工具，对象不同但底层思路一致 —— **AI 会留印子，要么检测、要么清洗、要么转用**：
+
+- **[sober-coding](https://github.com/voidborne-d/sober-coding)** — 代码侧的 humanize-chinese。27 条检查 / 7 个维度识别 vibe coding 产出里的 AI 痕迹（scope bloat、未验证的 API 调用、抄来的配置、import-path 臆造、半成品实现等），给修复建议，支持 CI 模式输出 SARIF。AI 写完代码、合 PR 之前扫一遍。
+- **[lambda-lang](https://github.com/voidborne-d/lambda-lang)** — agent-to-agent 通信协议。139 个原子、5-8× 压缩比，Go 实现。多 agent 协同时代替自然语言塞 context。
+
+---
+
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=voidborne-d/humanize-chinese&type=Date)](https://star-history.com/#voidborne-d/humanize-chinese&Date)
