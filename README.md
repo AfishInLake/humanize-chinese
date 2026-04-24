@@ -174,24 +174,27 @@ cp humanize-chinese/claude-code/*.md YOUR_PROJECT/.claude/commands/
 ./humanize compare text.txt -a           # 对比
 ```
 
-### 📚 长篇小说 / 博客（--scene novel）
+### 📚 长篇小说 / 博客（--scene novel / --scene auto）
 
-默认 detector 用 HC3 短问答校准，对 GPT-4o/Claude/Gemini 写的长篇小说会欠估。切 `--scene novel` 用专门在长篇（AI 139 样本 + 人类 300 样本）训的 LR：
+默认 detector 用 HC3 短问答校准，对 GPT-4o/Claude/Gemini 写的长篇小说、长博客会系统性欠估。两种修正方式：
 
 ```bash
-python scripts/detect_cn.py 章节.txt --scene novel    # 推荐给小说/长博客/散文
-python scripts/detect_cn.py 新闻.txt                  # 默认 scene，短问答/通用
-python scripts/detect_cn.py 论文.txt --scene academic  # 学术论文
+python scripts/detect_cn.py 章节.txt --scene novel     # 显式：小说/长博客/散文/长新闻
+python scripts/detect_cn.py 稿件.txt --scene auto      # 按长度自动选（≥1500 中文字符走长篇 LR）
+python scripts/detect_cn.py 短问答.txt                 # 默认 scene（短问答/通用）
+python scripts/detect_cn.py 论文.txt --scene academic  # 学术论文（显式 opt-in）
 ```
 
-实测对照（3 篇 Gemini 新写的 3000-4700 字小说章节）：
+长篇 LR 专训在 170 条 AI 长文本（5 家 LLM × 5 类：小说/学术/新闻/博客/评论）+ 170 条人类长文本（v3ucn 小说 + CNewSum 新闻 + 博客）上，holdout 89.7%。
+
+实测对照（3 篇 Gemini-2.5-flash 新写小说章节，约 2800-3200 字）：
 
 | 模式 | 样本1 | 样本2 | 样本3 | 均值 |
 |------|-------|-------|-------|------|
-| 默认 scene（HC3 校准） | 56 | 42 | 57 | 52 |
-| **--scene novel**（长篇校准） | **73** | **73** | **69** | **72** |
+| 默认 scene（HC3 校准） | 52 | 38 | 70 | 53 |
+| **--scene novel / auto** | **63** | **57** | **82** | **67** |
 
-默认模式对现代 LLM 的长篇小说系统性欠估 20 分左右，切 `--scene novel` 可修正。
+默认模式对现代 LLM 的长篇创作欠估 ~15 分，切 `--scene novel` 或 `--scene auto` 可修正。混合长度输入推荐 `--scene auto` —— 短文本仍走 general，长文本走长篇 LR。
 
 ### 🎨 风格转换
 
