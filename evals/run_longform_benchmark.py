@@ -94,6 +94,28 @@ def count_paragraphs(text):
     return sum(1 for p in text.split('\n\n') if p.strip())
 
 
+# Quality issue patterns — residual 观感 violations after humanize.
+# Each set targets a specific class of awkwardness flagged by Petalses
+# issue #5 / cycle 7-11 narrative diagnostics.
+_REACTION_FRAGMENTS = (
+    '颇有道理。', '难以一概。', '事出有因。', '耐人寻味。',
+    '值得深思。', '让人深思。', '可见一斑。', '有一定道理。',
+    '各有道理。', '一言难尽。', '说来话长。', '不无道理。',
+)
+_FIRST_PERSON_INTRUSION = (
+    '在我看来，', '我觉得，', '依我之见，', '讲真，',
+    '当然了，', '怎么说呢，', '不瞒你说，', '说到底，',
+)
+
+
+def count_quality_issues(text):
+    """Count residual 观感 violations in humanize output."""
+    return {
+        'reaction_fragments': sum(text.count(r) for r in _REACTION_FRAGMENTS),
+        'first_person_intrusion': sum(text.count(p) for p in _FIRST_PERSON_INTRUSION),
+    }
+
+
 def run_one_ai(sample, seed=42, best_of_n=0):
     orig = sample['text']
     orig_score = score_longform(orig, scene='novel')
@@ -103,6 +125,7 @@ def run_one_ai(sample, seed=42, best_of_n=0):
     p_before = count_paragraphs(orig)
     p_after = count_paragraphs(humanized)
     length_ratio = len(humanized) / len(orig) if len(orig) else 0
+    quality = count_quality_issues(humanized)
     return {
         'model': sample.get('model', '?'),
         'genre': sample.get('genre', '?'),
@@ -114,6 +137,8 @@ def run_one_ai(sample, seed=42, best_of_n=0):
         'paragraphs_after': p_after,
         'paragraph_preserved': p_after >= p_before,
         'length_ratio': length_ratio,
+        'reaction_fragments': quality['reaction_fragments'],
+        'first_person_intrusion': quality['first_person_intrusion'],
     }
 
 
@@ -199,6 +224,16 @@ def summarize(ai_results, human_results):
             'avg_length_ratio': round(
                 sum(r['length_ratio'] for r in ai_results) / n_ai, 3
             ),
+            # Marker occurrence counts (essay-register markers added by
+            # noise/reaction injection). For dialogue-heavy text these are
+            # 观感 violations (cycle 7/8/11 narrative guards already filter
+            # those). For pure essay/blog text these are register-appropriate.
+            'reaction_marker_count': sum(
+                r.get('reaction_fragments', 0) for r in ai_results
+            ),
+            'first_person_marker_count': sum(
+                r.get('first_person_intrusion', 0) for r in ai_results
+            ),
         },
         'by_genre': genre_summary,
         'by_model': model_summary,
@@ -223,6 +258,10 @@ def print_report(summary):
     sh = summary['structure_health']
     print(f"  段落保留率: {sh['paragraph_preserved_rate']*100:.1f}%")
     print(f"  平均长度比 (改写后/原文): {sh['avg_length_ratio']}")
+    print(f"  essay-register markers: reaction={sh.get('reaction_marker_count', 0)} / "
+          f"1st-person={sh.get('first_person_marker_count', 0)} 处")
+    print(f"  (narrative-heavy 观感 violations 已由 dialogue density guard 过滤；这些数字"
+          f"主要反映 essay/academic/blog register-appropriate insertions)")
     print()
     print('── 按 genre ──')
     for g, s in sorted(summary['by_genre'].items()):
