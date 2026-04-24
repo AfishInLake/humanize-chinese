@@ -888,15 +888,19 @@ def replace_phrases(text, casualness=0.3):
             alternatives = [alternatives]
         
         if phrase in text:
-            # Find the sentence containing this phrase for stats-optimized selection
-            # Use pick_best_replacement to choose the highest-perplexity candidate
-            replacement = pick_best_replacement(text, phrase, alternatives)
-            text = text.replace(phrase, replacement, 1)  # Replace first occurrence
-            # For subsequent occurrences, use different alternatives
+            # Filter out alternatives that contain the phrase as a substring —
+            # those cause infinite re-match loops (e.g. 相反 -> 相反地 reinserts
+            # 相反). Without this, slow-path bug: cycle 2 HC3 500 hang, cycle 13
+            # longform benchmark kill on samples 85/86/133/144 (all had 相反).
+            safe_alts = [alt for alt in alternatives if phrase not in alt]
+            if not safe_alts:
+                continue
+            replacement = pick_best_replacement(text, phrase, safe_alts)
+            text = text.replace(phrase, replacement, 1)
             while phrase in text:
-                replacement = pick_best_replacement(text, phrase, alternatives)
+                replacement = pick_best_replacement(text, phrase, safe_alts)
                 text = text.replace(phrase, replacement, 1)
-    
+
     return text
 
 def merge_short_sentences(text, min_len=8):
