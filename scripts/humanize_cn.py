@@ -722,6 +722,22 @@ def randomize_sentence_lengths(text, aggressive=False, seed=None):
 #  Strategy 3: Noise expression injection
 # ═══════════════════════════════════════════════════════════════════
 
+def _dialogue_density_local(text):
+    """Fraction of chars inside Chinese curly quotes (U+201C/D) or corner
+    brackets (U+300C/D). Threshold 0.08 flags narrative text."""
+    n = 0
+    for pat in (r'“[^“”]{3,}?”', r'「[^「」]{3,}?」'):
+        for m in re.findall(pat, text):
+            n += len(m)
+    return n / max(1, len(text))
+
+
+# Narrative-safe subset of NOISE_EXPRESSIONS categories. filler/personal/
+# transition_casual inject 1st-person author voice or oral fillers that
+# break 3rd-person fiction register.
+_NARRATIVE_SAFE_CATEGORIES = ['hedging', 'uncertainty', 'self_correction']
+
+
 def inject_noise_expressions(text, density=0.15, style='general'):
     """
     策略3: 在句子间或句中适当位置插入噪声表达。
@@ -734,6 +750,12 @@ def inject_noise_expressions(text, density=0.15, style='general'):
     else:
         categories = list(NOISE_EXPRESSIONS.keys())
         expressions = NOISE_EXPRESSIONS
+        # Narrative guard: if text is dialogue-heavy, drop categories that
+        # break 3rd-person voice (filler/personal/transition_casual).
+        if _dialogue_density_local(text) >= 0.08:
+            categories = [c for c in categories if c in _NARRATIVE_SAFE_CATEGORIES]
+            if not categories:
+                return text
 
     # Split into sentences
     parts = re.split(r'([。！？])', text)
