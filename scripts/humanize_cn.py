@@ -1307,7 +1307,12 @@ def humanize(text, scene='general', aggressive=False, seed=None, best_of_n=DEFAU
     # Final transition cap — AI overuses 首先/然而/此外/因此 etc, detect fires
     # density > 8/1000 chars. Cap at 6 to leave margin. Preserves text that's
     # already under the threshold.
-    text = cap_transition_density(text, target=6.0)
+    # Long-form (novel/blog) humans use far fewer transitions (d=0.92 gap vs
+    # AI). Drop cap target on long text so novel humanize approaches human 2.4
+    # density instead of staying at AI's 4.4 baseline.
+    cn_chars = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
+    trans_target = 3.0 if cn_chars >= 1500 else 6.0
+    text = cap_transition_density(text, target=trans_target)
 
     # Clean up artifacts
     text = re.sub(r'[，,]{2,}', '，', text)  # Remove double commas
