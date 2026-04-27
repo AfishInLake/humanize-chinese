@@ -15,6 +15,11 @@ import os
 import re
 from math import log2, exp
 
+# ─── 配置加载 ───
+from config_loader import load_config as _load_cfg
+_CFG = _load_cfg()
+_NCFG = _CFG.get('ngram', {})
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 FREQ_FILE = os.path.join(SCRIPT_DIR, 'ngram_freq_cn.json')
 
@@ -56,17 +61,22 @@ def _bigram_log_prob(c1, c2, freq):
     Compute log2 probability of bigram (c1, c2) using add-k smoothing.
     P(c2|c1) ≈ (count(c1c2) + k) / (count(c1) + k * V)
     """
+    # 从配置文件读取参数
+    _vocab_min = _NCFG.get('vocab_min', 1000)
+    _smoothing_k = _NCFG.get('smoothing_k', 0.01)
+    _log_prob_floor = _NCFG.get('log_prob_floor', -20.0)
+
     unigrams = freq['unigrams']
     bigrams = freq['bigrams']
-    V = max(len(unigrams), 1000)  # vocabulary size
-    k = 0.01  # smoothing factor
+    V = max(len(unigrams), _vocab_min)  # vocabulary size
+    k = _smoothing_k  # smoothing factor
 
     bigram_key = c1 + c2
     bi_count = bigrams.get(bigram_key, 0)
     uni_count = unigrams.get(c1, 0)
 
     prob = (bi_count + k) / (uni_count + k * V)
-    return log2(prob) if prob > 0 else -20.0  # floor for unseen
+    return log2(prob) if prob > 0 else _log_prob_floor  # floor for unseen
 
 
 def _trigram_log_prob(c1, c2, c3, freq):
@@ -74,11 +84,17 @@ def _trigram_log_prob(c1, c2, c3, freq):
     Compute log2 probability of trigram using interpolation with bigrams.
     P_interp = lambda * P_tri(c3|c1c2) + (1-lambda) * P_bi(c3|c2)
     """
+    # 从配置文件读取参数
+    _vocab_min = _NCFG.get('vocab_min', 1000)
+    _smoothing_k = _NCFG.get('smoothing_k', 0.01)
+    _trigram_weight = _NCFG.get('trigram_weight', 0.6)
+    _log_prob_floor = _NCFG.get('log_prob_floor', -20.0)
+
     bigrams = freq['bigrams']
     trigrams = freq['trigrams']
-    V = max(len(freq['unigrams']), 1000)
-    k = 0.01
-    lam = 0.6  # trigram weight
+    V = max(len(freq['unigrams']), _vocab_min)
+    k = _smoothing_k
+    lam = _trigram_weight  # trigram weight
 
     # Trigram probability
     tri_key = c1 + c2 + c3
@@ -93,7 +109,7 @@ def _trigram_log_prob(c1, c2, c3, freq):
 
     # Interpolation in probability space
     p_interp = lam * p_tri + (1 - lam) * p_bi
-    return log2(p_interp) if p_interp > 0 else -20.0
+    return log2(p_interp) if p_interp > 0 else _log_prob_floor
 
 
 def compute_unigram_perplexity(text):
@@ -136,10 +152,13 @@ def compute_perplexity(text, window_size=0):
           - log_probs: per-character log prob series (used for DivEye surprisal stats)
           - char_count: number of Chinese characters used
     """
+    # 从配置文件读取最小字符数阈值
+    ppl_min_chars = _NCFG.get('perplexity_min_chars', 5)
+
     freq = _load_freq()
     chars = _extract_chinese(text)
 
-    if len(chars) < 5:
+    if len(chars) < ppl_min_chars:
         return {
             'perplexity': 0.0,
             'avg_log_prob': 0.0,
@@ -307,8 +326,11 @@ def compute_gltr_buckets(text):
     if not bigrams:
         return {}
 
+    # 从配置文件读取 GLTR 参数
+    gltr_min_chars = _NCFG.get('gltr_min_chars', 30)
+
     chars = _extract_chinese(text)
-    if len(chars) < 30:
+    if len(chars) < gltr_min_chars:
         return {}
 
     # Precompute ranked followers for each prefix char we see in text
@@ -373,7 +395,10 @@ def compute_diveye_features(log_probs):
       - spectral_flatness: [0, 1], higher = flatter = AI-like
       - skew, excess_kurt: distribution shape
     """
-    if len(log_probs) < 16:
+    # 从配置文件读取 DivEye 参数
+    diveye_min_seq = _NCFG.get('diveye_min_seq', 16)
+
+    if len(log_probs) < diveye_min_seq:
         return {
             'autocorr_lag1': 0.0,
             'autocorr_lag2': 0.0,
@@ -420,15 +445,22 @@ def _top_chars(k=500):
     return _TOP_CHARS_CACHE
 
 
-def compute_curvature(text, n_positions=50, k_alts=10, seed=42):
+def compute_curvature(text, n_positions=None, k_alts=None, seed=42):
     """Mean log-prob curvature over sampled positions.
 
     Returns dict with:
       curvature_mean: mean of (log_p(actual) - mean log_p(top-K alternatives))
       n_positions: number of positions evaluated
     """
+    # 从配置文件读取曲率参数
+    if n_positions is None:
+        n_positions = _NCFG.get('curvature_n_positions', 50)
+    if k_alts is None:
+        k_alts = _NCFG.get('curvature_k_alts', 10)
+    curvature_min_chars = _NCFG.get('curvature_min_chars', 30)
+
     chars = [c for c in text if '\u4e00' <= c <= '\u9fff']
-    if len(chars) < 30:
+    if len(chars) < curvature_min_chars:
         return {'curvature_mean': 0.0, 'n_positions': 0}
 
     freq = _load_freq()
@@ -707,8 +739,11 @@ def compute_transition_density(text):
     Uses substring match (no tokenization needed). ChatGPT on HC3 averages 13.7
     per 1000 chars vs 6.98 for humans (d = 0.617).
     """
+    # 从配置文件读取过渡词密度参数
+    trans_min_cn = _NCFG.get('transition_density_min_cn', 50)
+
     cn = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
-    if cn < 50:
+    if cn < trans_min_cn:
         return {'count': 0, 'density': 0.0, 'cn_chars': cn}
     count = sum(text.count(w) for w in _TRANSITION_PHRASES)
     return {'count': count, 'density': count / cn * 1000, 'cn_chars': cn}
@@ -762,19 +797,25 @@ def compute_sentence_length_features(text):
     """Statistical features of sentence-length distribution.
 
     Returns:
-      n_sentences: sentences of >= 3 Chinese chars
+      n_sentences: sentences of >= min_cn Chinese chars
       mean_len:    mean Chinese chars per sentence
       std_len:     population stddev
       cv:          coefficient of variation (std/mean)
-      short_frac:  fraction of sentences with < 10 Chinese chars
-      long_frac:   fraction of sentences with > 30 Chinese chars
+      short_frac:  fraction of sentences with < short_threshold Chinese chars
+      long_frac:   fraction of sentences with > long_threshold Chinese chars
       equal_mid_frac: fraction in the 15-25 "AI equal-length" band
     """
+    # 从配置文件读取句长参数
+    sl_min_cn = _NCFG.get('sentence_length_min_cn', 3)
+    sl_short = _NCFG.get('short_sentence_threshold', 10)
+    sl_long = _NCFG.get('long_sentence_threshold', 30)
+    sl_ai_equal = _NCFG.get('ai_equal_range', [15, 25])
+
     parts = re.split(r'[。！？\n]', text)
     lengths = []
     for p in parts:
         cn = sum(1 for c in p if '\u4e00' <= c <= '\u9fff')
-        if cn >= 3:
+        if cn >= sl_min_cn:
             lengths.append(cn)
 
     n = len(lengths)
@@ -794,9 +835,9 @@ def compute_sentence_length_features(text):
     variance = sum((x - mean_len) ** 2 for x in lengths) / n
     std_len = variance ** 0.5
     cv = std_len / mean_len
-    short_frac = sum(1 for x in lengths if x < 10) / n
-    long_frac = sum(1 for x in lengths if x > 30) / n
-    equal_mid_frac = sum(1 for x in lengths if 15 <= x <= 25) / n
+    short_frac = sum(1 for x in lengths if x < sl_short) / n
+    long_frac = sum(1 for x in lengths if x > sl_long) / n
+    equal_mid_frac = sum(1 for x in lengths if sl_ai_equal[0] <= x <= sl_ai_equal[1]) / n
 
     return {
         'n_sentences': n, 'mean_len': mean_len, 'std_len': std_len,
@@ -833,7 +874,7 @@ def compute_char_mattr(text, window=100):
 
 # ─── Burstiness ───
 
-def compute_burstiness(text, window_size=50):
+def compute_burstiness(text, window_size=None):
     """
     Compute burstiness as coefficient of variation of windowed perplexities.
 
@@ -842,7 +883,7 @@ def compute_burstiness(text, window_size=50):
 
     Args:
         text: input text
-        window_size: character window for perplexity segments
+        window_size: character window for perplexity segments (默认从配置文件读取)
 
     Returns:
         dict with:
@@ -851,6 +892,8 @@ def compute_burstiness(text, window_size=50):
           - std_ppl: standard deviation of window perplexities
           - n_windows: number of windows analyzed
     """
+    if window_size is None:
+        window_size = _NCFG.get('burstiness_window_size', 50)
     result = compute_perplexity(text, window_size=window_size)
     ppls = result['window_perplexities']
 
@@ -981,10 +1024,14 @@ def analyze_text(text):
       - diveye: dict of DivEye-style surprisal features (autocorr, spectral flatness, shape)
       - indicators: dict of boolean flags for AI-like patterns
     """
+    # 从配置文件读取分析参数
+    analyze_min_chars = _NCFG.get('analyze_min_chars', 30)
+    burst_window = _NCFG.get('burstiness_window_size', 50)
+
     chars = _extract_chinese(text)
     char_count = len(chars)
 
-    if char_count < 30:
+    if char_count < analyze_min_chars:
         return {
             'perplexity': 0.0,
             'burstiness': 0.0,
@@ -1002,10 +1049,10 @@ def analyze_text(text):
         }
 
     # Perplexity
-    ppl_result = compute_perplexity(text, window_size=50)
+    ppl_result = compute_perplexity(text, window_size=burst_window)
 
     # Burstiness
-    burst_result = compute_burstiness(text, window_size=50)
+    burst_result = compute_burstiness(text, window_size=burst_window)
 
     # Entropy uniformity
     ent_result = compute_entropy_uniformity(text)
@@ -1078,44 +1125,55 @@ def analyze_text(text):
     # against naturally-written ChatGPT. Kept as indicators for backward compatibility
     # and because they still catch the stereotyped AI text the project originally targeted.
     gltr_top10 = gltr.get('proportions', {}).get('top10', 0.0) if gltr else 0.0
+
+    # 从配置文件读取指标阈值
+    ind = _NCFG.get('indicators', {})
+
     indicators = {
-        # Perplexity in the "formulaic formal" range (100-500) with enough text
-        'low_perplexity': 50 < ppl < 500 and char_count >= 200,
+        # Perplexity in the "formulaic formal" range with enough text
+        'low_perplexity': (
+            ind.get('low_perplexity', {}).get('ppl_range', [50, 500])[0] < ppl < ind.get('low_perplexity', {}).get('ppl_range', [50, 500])[1]
+            and char_count >= ind.get('low_perplexity', {}).get('min_chars', 200)
+        ),
         # Very low burstiness with enough data points (stereotyped AI)
-        'low_burstiness': burst < 0.12 and n_windows >= 6,
+        'low_burstiness': (
+            burst < ind.get('low_burstiness', {}).get('burst_threshold', 0.12)
+            and n_windows >= ind.get('low_burstiness', {}).get('min_windows', 6)
+        ),
         # Very uniform paragraph entropy with enough paragraphs (stereotyped AI)
-        'uniform_entropy': ent_cv < 0.05 and n_paras >= 3,
+        'uniform_entropy': (
+            ent_cv < ind.get('uniform_entropy', {}).get('cv_threshold', 0.05)
+            and n_paras >= ind.get('uniform_entropy', {}).get('min_paragraphs', 3)
+        ),
         # DivEye: low skewness of per-char log-prob = fewer outlier "creative" choices
         'low_surprisal_skew': (
-            diveye.get('skew', 2.0) < 1.35 and char_count >= 150
+            diveye.get('skew', 2.0) < ind.get('low_surprisal_skew', {}).get('skew_threshold', 1.35)
+            and char_count >= ind.get('low_surprisal_skew', {}).get('min_chars', 150)
         ),
         # DivEye: low kurt = thinner tails = uniform predictability (AI-like)
         'low_surprisal_kurt': (
-            diveye.get('excess_kurt', 1.0) < 0.35 and char_count >= 150
+            diveye.get('excess_kurt', 1.0) < ind.get('low_surprisal_kurt', {}).get('kurt_threshold', 0.35)
+            and char_count >= ind.get('low_surprisal_kurt', {}).get('min_chars', 150)
         ),
         # GLTR: high top-10 bucket proportion = AI picks from top-probability continuations
-        # Threshold 0.21 from HC3 midpoint between human (0.19) and AI (0.22) means.
         'high_top10_bucket': (
-            gltr_top10 > 0.21 and char_count >= 150
+            gltr_top10 > ind.get('high_top10_bucket', {}).get('top10_threshold', 0.21)
+            and char_count >= ind.get('high_top10_bucket', {}).get('min_chars', 150)
         ),
         # Sentence-length CV: AI writes formulaic sentences with low length variance.
-        # HC3-Chinese 300+300 calibration (2026-04-19):
-        #   human mean CV 0.52, AI mean CV 0.32, Cohen's d = 1.22
-        # Threshold 0.40 — best tradeoff (flags 81% AI vs 29% human, spread 52%).
         'low_sentence_length_cv': (
-            sent_len.get('cv', 1.0) < 0.40 and sent_len.get('n_sentences', 0) >= 5
+            sent_len.get('cv', 1.0) < ind.get('low_sentence_length_cv', {}).get('cv_threshold', 0.40)
+            and sent_len.get('n_sentences', 0) >= ind.get('low_sentence_length_cv', {}).get('min_sentences', 5)
         ),
-        # Short-sentence fraction: humans frequently write < 10-char sentences,
-        # AI rarely does. HC3 calibration: human mean 24.9%, AI mean 2.6%, d = 1.21.
-        # Flag text with virtually no short sentences (< 8%).
+        # Short-sentence fraction: humans frequently write short sentences, AI rarely does.
         'low_short_sentence_fraction': (
-            sent_len.get('short_frac', 1.0) < 0.08 and sent_len.get('n_sentences', 0) >= 5
+            sent_len.get('short_frac', 1.0) < ind.get('low_short_sentence_fraction', {}).get('frac_threshold', 0.08)
+            and sent_len.get('n_sentences', 0) >= ind.get('low_short_sentence_fraction', {}).get('min_sentences', 5)
         ),
-        # Low comma density (HC3 d = -0.47): AI writes flowing prose with long
-        # uninterrupted clauses; humans punctuate more. Threshold 4.5 per 100 chars
-        # flags 76% AI vs 44% human (spread 31%).
+        # Low comma density: AI writes flowing prose with long uninterrupted clauses.
         'low_comma_density': (
-            punct.get('comma_density', 10.0) < 4.5 and char_count >= 100
+            punct.get('comma_density', 10.0) < ind.get('low_comma_density', {}).get('density_threshold', 4.5)
+            and char_count >= ind.get('low_comma_density', {}).get('min_chars', 100)
         ),
         # High transition density — tried at cap 40 cycle A-2, marginal gap gain
         # (+0.6) but 1pt correct-rate drop. Still disabled. Humanize-side work
@@ -1249,10 +1307,12 @@ def _load_lr_coef(path=None, scene='general'):
     return data
 
 
-def _auto_scene(text_or_analysis, short_thresh=1500):
-    """Choose scene by text length. Long text (>= 1500 Chinese chars)
+def _auto_scene(text_or_analysis, short_thresh=None):
+    """Choose scene by text length. Long text (>= short_thresh Chinese chars)
     routes to the long-form LR; shorter text stays on general. Academic
     is never auto-selected — users must opt in explicitly."""
+    if short_thresh is None:
+        short_thresh = _NCFG.get('auto_scene_short_threshold', 1500)
     if isinstance(text_or_analysis, str):
         cn = sum(1 for c in text_or_analysis if '\u4e00' <= c <= '\u9fff')
     else:
@@ -1289,10 +1349,11 @@ def compute_lr_score(text_or_analysis, coef_path=None, scene='general'):
                     for i in range(n)]
     logit = intercept + sum(standardized[i] * weights[i] for i in range(n))
     import math as _m
-    # Clamp to avoid overflow
-    if logit > 500:
+    # Clamp to avoid overflow (从配置文件读取范围)
+    logit_clamp = _NCFG.get('logit_clamp', [-500, 500])
+    if logit > logit_clamp[1]:
         p_ai = 1.0
-    elif logit < -500:
+    elif logit < logit_clamp[0]:
         p_ai = 0.0
     else:
         p_ai = 1.0 / (1.0 + _m.exp(-logit))

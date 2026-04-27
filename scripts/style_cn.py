@@ -23,6 +23,11 @@ except ImportError:
     except ImportError:
         _humanize_text = None
 
+# ─── 配置加载 ───
+from config_loader import load_config as _load_cfg
+_CFG = _load_cfg()
+_SCFG = _CFG.get('style', {})
+
 # ─── 风格配置 ───
 
 STYLES = {
@@ -111,8 +116,11 @@ def replace_formal_words(text):
                 text = text.replace(formal, '')
     return text
 
-def add_emojis(text, category='positive', density=0.2):
+def add_emojis(text, category='positive', density=None):
     """在句尾添加 emoji"""
+    # ─── 从配置读取默认 emoji 密度 ───
+    if density is None:
+        density = _SCFG.get('emoji_density', 0.2)
     pool = EMOJIS.get(category, EMOJIS['positive'])
     sentences = re.split(r'([。！？])', text)
     result = []
@@ -132,8 +140,11 @@ def add_emojis(text, category='positive', density=0.2):
     
     return ''.join(result)
 
-def shorten_paragraphs(text, max_length=120):
+def shorten_paragraphs(text, max_length=None):
     """缩短段落"""
+    # ─── 从配置读取默认缩短长度 ───
+    if max_length is None:
+        max_length = _SCFG.get('shorten_max_length', 120)
     paragraphs = text.split('\n\n')
     result = []
     
@@ -186,6 +197,10 @@ def strip_emojis(text):
 
 def transform_casual(text):
     """口语化风格"""
+    # ─── 从配置读取口语化参数 ───
+    _tone_prob = _SCFG.get('casual_tone_prob', 0.15)
+    _conn_prob = _SCFG.get('casual_connector_prob', 0.15)
+    _emoji_dens = _SCFG.get('casual_emoji_density', 0.1)
     text = remove_formal_structure(text)
     text = replace_formal_words(text)
     
@@ -207,12 +222,12 @@ def transform_casual(text):
             openers_used = True
         
         # 随机加语气词
-        if random.random() < 0.15:
+        if random.random() < _tone_prob:
             particle = random.choice(['吧', '呢', '啊', '嘛'])
             sent = sent + particle
         
         # 随机加口语连接
-        if i > 0 and random.random() < 0.15:
+        if i > 0 and random.random() < _conn_prob:
             connector = random.choice(['不过', '话说', '说实话', '确实'])
             sent = connector + '，' + sent
         
@@ -222,11 +237,15 @@ def transform_casual(text):
         result.append(sentences[-1])
     
     text = ''.join(result)
-    text = add_emojis(text, 'casual', density=0.1)
+    text = add_emojis(text, 'casual', density=_emoji_dens)
     return text
 
 def transform_zhihu(text):
     """知乎风格"""
+    # ─── 从配置读取知乎参数 ───
+    _example_prob = _SCFG.get('zhihu_example_prob', 0.3)
+    _support_prob = _SCFG.get('zhihu_support_prob', 0.1)
+    _ending_prob = _SCFG.get('zhihu_ending_prob', 0.3)
     text = remove_formal_structure(text)
     text = replace_formal_words(text)
     
@@ -252,14 +271,14 @@ def transform_zhihu(text):
             opinion_added = True
         
         # 中间加举例
-        if not example_added and i >= total // 2 and random.random() < 0.3:
+        if not example_added and i >= total // 2 and random.random() < _example_prob:
             sent = '举个例子，' + sent
             example_added = True
         
         # 在某些句子前加数据/经验支撑（避免和已有连接词叠加）
         connector_words = ['总之', '另外', '还有', '所以', '但是', '不过', '同时']
         has_connector = any(sent.startswith(w) for w in connector_words)
-        if not has_connector and random.random() < 0.1:
+        if not has_connector and random.random() < _support_prob:
             support = random.choice(['实际上', '从数据来看', '根据实际经验'])
             sent = support + '，' + sent
         
@@ -271,7 +290,7 @@ def transform_zhihu(text):
     text = ''.join(result)
     
     # 知乎结尾
-    if random.random() < 0.3:
+    if random.random() < _ending_prob:
         endings = [
             '\n\n以上，希望对你有帮助。',
             '\n\n欢迎讨论。',
@@ -283,6 +302,12 @@ def transform_zhihu(text):
 
 def transform_xiaohongshu(text):
     """小红书风格"""
+    # ─── 从配置读取小红书参数 ───
+    _word_prob = _SCFG.get('xhs_word_replace_prob', 0.3)
+    _exclaim_prob = _SCFG.get('xhs_exclaim_prob', 0.3)
+    _emoji_dens = _SCFG.get('xhs_emoji_density', 0.4)
+    _max_para = _SCFG.get('xhs_max_para_length', 80)
+    _tag_count = _SCFG.get('xhs_tag_count', 3)
     text = remove_formal_structure(text)
     text = replace_formal_words(text)
     
@@ -313,11 +338,11 @@ def transform_xiaohongshu(text):
             '不错': random.choice(['真的绝', '超赞', 'yyds']),
         }
         for old, new in xhs_replacements.items():
-            if old in sent and random.random() < 0.3:
+            if old in sent and random.random() < _word_prob:
                 sent = sent.replace(old, new, 1)
         
         # 加感叹号比例
-        if random.random() < 0.3:
+        if random.random() < _exclaim_prob:
             punct = '！'
         
         result.append(sent + punct)
@@ -328,22 +353,25 @@ def transform_xiaohongshu(text):
     text = random.choice(openers) + '～\n\n' + ''.join(result)
     
     # 加 emoji（高密度）
-    text = add_emojis(text, 'xhs', density=0.4)
+    text = add_emojis(text, 'xhs', density=_emoji_dens)
     
     # 短段落
-    text = shorten_paragraphs(text, max_length=80)
+    text = shorten_paragraphs(text, max_length=_max_para)
     
     # 加话题标签
     tags = random.sample([
         '#好物分享', '#种草', '#实用推荐', '#干货分享',
         '#生活分享', '#经验分享', '#必看', '#宝藏',
-    ], 3)
+    ], _tag_count)
     text += '\n\n' + ' '.join(tags)
     
     return text
 
 def transform_wechat(text):
     """公众号风格"""
+    # ─── 从配置读取公众号参数 ───
+    _rhet_prob = _SCFG.get('wechat_rhetorical_prob', 0.4)
+    _end_prob = _SCFG.get('wechat_ending_prob', 0.4)
     text = remove_formal_structure(text)
     
     # 故事化开头
@@ -372,7 +400,7 @@ def transform_wechat(text):
             continue
         
         # 中间插反问
-        if not question_added and i >= total // 3 and i <= total * 2 // 3 and random.random() < 0.4:
+        if not question_added and i >= total // 3 and i <= total * 2 // 3 and random.random() < _rhet_prob:
             questions = ['你可能会问', '为什么呢', '这意味着什么']
             result.append('\n\n' + random.choice(questions) + '？\n\n')
             question_added = True
@@ -385,7 +413,7 @@ def transform_wechat(text):
     text = ''.join(result)
     
     # 公众号结尾
-    if random.random() < 0.4:
+    if random.random() < _end_prob:
         endings = [
             '\n\n**如果觉得有用，欢迎点赞收藏。**',
             '\n\n你怎么看？评论区聊聊。',
@@ -397,6 +425,8 @@ def transform_wechat(text):
 
 def transform_academic(text):
     """学术风格"""
+    # ─── 从配置读取学术风格参数 ───
+    _exclaim_limit = _SCFG.get('academic_exclaim_limit', 2)
     # 口语化 → 学术化
     casual_to_formal = {
         '很': '较为',
@@ -432,7 +462,7 @@ def transform_academic(text):
     
     # 把 ！ 换成 。 （学术文章少用感叹号）
     exclamation_count = text.count('！')
-    if exclamation_count > 2:
+    if exclamation_count > _exclaim_limit:
         # Keep at most 1 exclamation
         parts = text.split('！')
         text = '。'.join(parts[:-1]) + '。' + parts[-1] if len(parts) > 1 else text
@@ -441,6 +471,10 @@ def transform_academic(text):
 
 def transform_literary(text):
     """文艺风格"""
+    # ─── 从配置读取文艺参数 ───
+    _imagery_prob = _SCFG.get('literary_imagery_prob', 0.3)
+    _imagery_max = _SCFG.get('literary_imagery_max', 2)
+    _sensory_prob = _SCFG.get('literary_sensory_prob', 0.15)
     text = remove_formal_structure(text)
     text = replace_formal_words(text)
     
@@ -457,7 +491,7 @@ def transform_literary(text):
     # 随机替换（克制地）
     replacements_made = 0
     for literal, metaphors in imagery.items():
-        if literal in text and replacements_made < 2 and random.random() < 0.3:
+        if literal in text and replacements_made < _imagery_max and random.random() < _imagery_prob:
             text = text.replace(literal, random.choice(metaphors), 1)
             replacements_made += 1
     
@@ -479,7 +513,7 @@ def transform_literary(text):
             continue
         
         # 偶尔添加感官描写开头
-        if not sensory_added and random.random() < 0.15 and i > 0:
+        if not sensory_added and random.random() < _sensory_prob and i > 0:
             sensory = random.choice(sensory_inserts)
             sent = sensory + '——' + sent
             sensory_added = True
@@ -528,6 +562,9 @@ def transform_novel(text):
          多半是人物对白，强删会伤叙事）
       5. 不加感官描写（literary 风的东西），叙事应由作者定
     """
+    # ─── 从配置读取小说参数 ───
+    _meta_thresh = _SCFG.get('novel_meta_delete_threshold', 300)
+    _artifact_len = _SCFG.get('novel_artifact_check_len', 60)
     artifact_pats = [re.compile(p) for p in _NOVEL_ARTIFACT_PATTERNS]
 
     def _has_artifact(p_head):
@@ -564,8 +601,8 @@ def transform_novel(text):
         # head contains artifact pattern AND paragraph is short (<300).
         # Long paragraphs with artifact mention are likely body text
         # referencing it rhetorically, keep those.
-        head = stripped[:60]
-        if _has_artifact(head) and len(stripped) < 300:
+        head = stripped[:_artifact_len]
+        if _has_artifact(head) and len(stripped) < _meta_thresh:
             continue
 
         cleaned.append(stripped)
@@ -575,6 +612,10 @@ def transform_novel(text):
 
 def transform_weibo(text):
     """微博风格"""
+    # ─── 从配置读取微博参数 ───
+    _max_sents = _SCFG.get('weibo_max_sentences', 5)
+    _attitude_prob = _SCFG.get('weibo_attitude_prob', 0.4)
+    _emoji_dens = _SCFG.get('weibo_emoji_density', 0.15)
     text = remove_formal_structure(text)
     text = replace_formal_words(text)
     
@@ -584,7 +625,7 @@ def transform_weibo(text):
     
     # 只保留前几句精华
     sent_count = 0
-    max_sents = 5
+    max_sents = _max_sents
     
     for i in range(0, len(sentences) - 1, 2):
         sent = sentences[i].strip()
@@ -598,7 +639,7 @@ def transform_weibo(text):
             break
         
         # 加态度
-        if sent_count == 1 and random.random() < 0.4:
+        if sent_count == 1 and random.random() < _attitude_prob:
             attitude = random.choice(['说真的，', '讲道理，', ''])
             sent = attitude + sent
         
@@ -607,7 +648,7 @@ def transform_weibo(text):
     text = ''.join(result)
     
     # 加话题
-    text = add_emojis(text, 'casual', density=0.15)
+    text = add_emojis(text, 'casual', density=_emoji_dens)
     
     return text
 

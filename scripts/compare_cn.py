@@ -10,10 +10,17 @@ import os
 import json
 import argparse
 
+# ─── 配置加载 ───
+from config_loader import load_config as _load_cfg
+_CFG = _load_cfg()
+_CCCFG = _CFG.get('compare', {})
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 def run_detect(text, as_json=True):
     """Run detect_cn.py and get results"""
+    # ─── 从配置读取检测超时 ───
+    _detect_timeout = _CCCFG.get('detect_timeout', 30)
     detect_script = os.path.join(SCRIPT_DIR, 'detect_cn.py')
     cmd = ['python3', detect_script]
     if as_json:
@@ -22,7 +29,7 @@ def run_detect(text, as_json=True):
     try:
         result = subprocess.run(
             cmd, input=text, capture_output=True,
-            text=True, encoding='utf-8', timeout=30
+            text=True, encoding='utf-8', timeout=_detect_timeout
         )
         if as_json and result.returncode == 0:
             return json.loads(result.stdout)
@@ -32,6 +39,8 @@ def run_detect(text, as_json=True):
 
 def run_humanize(text, scene='general', aggressive=False, style=None):
     """Run humanize_cn.py and get result"""
+    # ─── 从配置读取改写超时 ───
+    _humanize_timeout = _CCCFG.get('humanize_timeout', 30)
     humanize_script = os.path.join(SCRIPT_DIR, 'humanize_cn.py')
     cmd = ['python3', humanize_script, '--scene', scene]
     if aggressive:
@@ -42,7 +51,7 @@ def run_humanize(text, scene='general', aggressive=False, style=None):
     try:
         result = subprocess.run(
             cmd, input=text, capture_output=True,
-            text=True, encoding='utf-8', timeout=30
+            text=True, encoding='utf-8', timeout=_humanize_timeout
         )
         return result.stdout
     except Exception as e:
@@ -50,6 +59,8 @@ def run_humanize(text, scene='general', aggressive=False, style=None):
 
 def format_comparison(before, after):
     """Format detailed comparison"""
+    # ─── 从配置读取进度条长度 ───
+    _bar_len = _CCCFG.get('format_bar_length', 20)
     lines = []
     
     b_score = before.get('score', 0)
@@ -58,12 +69,12 @@ def format_comparison(before, after):
     a_level = after.get('level', 'unknown')
     
     # Score comparison bar
-    b_bar_len = int(b_score / 100 * 20)
-    a_bar_len = int(a_score / 100 * 20)
+    b_bar_len = int(b_score / 100 * _bar_len)
+    a_bar_len = int(a_score / 100 * _bar_len)
     
     lines.append('═══ 对比结果 ═══\n')
-    lines.append(f'原文:   {b_score:3d}/100 [{"█" * b_bar_len}{"░" * (20 - b_bar_len)}] {b_level.upper()}')
-    lines.append(f'改写后: {a_score:3d}/100 [{"█" * a_bar_len}{"░" * (20 - a_bar_len)}] {a_level.upper()}')
+    lines.append(f'原文:   {b_score:3d}/100 [{"█" * b_bar_len}{"░" * (_bar_len - b_bar_len)}] {b_level.upper()}')
+    lines.append(f'改写后: {a_score:3d}/100 [{"█" * a_bar_len}{"░" * (_bar_len - a_bar_len)}] {a_level.upper()}')
     
     diff = b_score - a_score
     if diff > 0:
@@ -117,7 +128,9 @@ def main():
     parser = argparse.ArgumentParser(description='中文 AI 文本对比分析 v2.0')
     parser.add_argument('file', nargs='?', help='输入文件路径')
     parser.add_argument('-o', '--output', help='保存改写结果')
-    parser.add_argument('--scene', default='general',
+    # ─── 从配置读取默认场景 ───
+    _default_scene = _CCCFG.get('default_scene', 'general')
+    parser.add_argument('--scene', default=_default_scene,
                        choices=['general', 'social', 'tech', 'formal', 'chat'],
                        help='场景')
     parser.add_argument('--style', help='写作风格')

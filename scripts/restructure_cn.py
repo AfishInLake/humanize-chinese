@@ -11,6 +11,11 @@ Chinese Deep Restructuring Module v1.0
 import re
 import random
 
+# ─── 配置加载 ───
+from config_loader import load_config as _load_cfg
+_CFG = _load_cfg()
+_RCFG = _CFG.get('restructure', {})
+
 
 # ═══════════════════════════════════════════════════════════════════
 #  1. 句式结构变换 — 15 种常见模板
@@ -435,7 +440,75 @@ def _build_templates():
 _SENTENCE_TEMPLATES = _build_templates()
 
 
-def restructure_sentences(text, strength=0.6):
+def _dependency_restructure_sentence(sentence):
+    """基于依存句法分析的智能句式变换。
+    
+    识别"通过X实现Y""X对Y有Z影响"等结构，程序化重组。
+    返回变换后的句子，或 None 表示不变换。
+    """
+    ltp = _get_ltp()
+    if ltp is None:
+        return None
+    
+    cn_len = len(re.findall(r'[\u4e00-\u9fff]', sentence))
+    if cn_len < 10 or cn_len > 60:
+        return None
+    
+    try:
+        dep = ltp.dep([sentence])[0]
+        words = dep['word']
+        heads = dep['head']
+        deprels = dep['deprel']
+    except Exception:
+        return None
+    
+    # Pattern: "通过 X ， Y 能够/可以 Z" → "Y Z ，靠的是 X"
+    # Detect: a word with deprel=ADV (状语) that is "通过"
+    adv_indices = [i for i, d in enumerate(deprels) if d == 'ADV']
+    for adv_idx in adv_indices:
+        if words[adv_idx] == '通过' and adv_idx + 1 < len(words):
+            # Find the verb (HED) and its object
+            hed_idx = None
+            for i, d in enumerate(deprels):
+                if d == 'HED':
+                    hed_idx = i
+                    break
+            if hed_idx is None:
+                continue
+            
+            # Build: subject + verb + object, 靠的是 + instrument
+            subj_words = []
+            for i in range(len(words)):
+                if deprels[i] == 'SBV' and heads[i] - 1 == hed_idx:
+                    subj_words.append(words[i])
+            
+            if not subj_words:
+                continue
+            
+            instrument_words = words[adv_idx + 1:hed_idx]
+            # Filter out punctuation
+            instrument = ''.join(w for w in instrument_words if '\u4e00' <= w[0] <= '\u9fff')
+            subject = ''.join(subj_words)
+            verb = words[hed_idx]
+            obj_words = []
+            for i in range(hed_idx + 1, len(words)):
+                if deprels[i] == 'VOB' and heads[i] - 1 == hed_idx:
+                    obj_words.append(words[i])
+            obj = ''.join(obj_words) if obj_words else ''
+            
+            if not instrument or not subject or not verb:
+                continue
+            
+            # Generate restructured sentence
+            new_sent = f'{subject}{verb}{obj}，靠的是{instrument}'
+            new_cn = len(re.findall(r'[\u4e00-\u9fff]', new_sent))
+            if abs(new_cn - cn_len) < cn_len * 0.5 and new_cn >= 8:
+                return new_sent
+    
+    return None
+
+
+def restructure_sentences(text, strength=None):
     """对文本中的句子进行句式结构变换。
 
     使用预定义的正则模板识别常见 AI 写作句式，替换为更自然的表达。
@@ -443,11 +516,15 @@ def restructure_sentences(text, strength=0.6):
 
     Args:
         text: 输入中文文本
-        strength: 变换概率 (0-1)，默认 0.6 表示匹配到的句子有 60% 概率被改写
+        strength: 变换概率 (0-1)，默认从配置文件读取
 
     Returns:
         改写后的文本
     """
+    if strength is None:
+        strength = _RCFG.get('sentence_strength', 0.6)
+    # 从配置文件读取最小中文字数阈值
+    min_cn = _RCFG.get('sentence_min_cn', 10)
     # 按句号/感叹号/问号切分
     parts = re.split(r'([。！？])', text)
     result = []
@@ -462,7 +539,17 @@ def restructure_sentences(text, strength=0.6):
         # 对每个句段尝试匹配模板（最多改一次）
         transformed = False
         cn_len = len(re.findall(r'[\u4e00-\u9fff]', segment))
-        if segment.strip() and cn_len >= 10 and random.random() < strength:
+        if segment.strip() and cn_len >= min_cn and random.random() < strength:
+            # 先尝试依存句法变换
+            dep_result = _dependency_restructure_sentence(segment)
+            if dep_result:
+                new_cn_len = len(re.findall(r'[\u4e00-\u9fff]', dep_result))
+                if abs(new_cn_len - cn_len) < cn_len * 0.5:
+                    segment = dep_result
+                    transformed = True
+                    result.append(segment)
+                    continue
+
             for pattern, replacements in _SENTENCE_TEMPLATES:
                 m = pattern.search(segment)
                 if m:
@@ -481,6 +568,150 @@ def restructure_sentences(text, strength=0.6):
 
         result.append(segment)
 
+    return ''.join(result)
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  依存句法分析拆分（ltp 增强）
+# ═══════════════════════════════════════════════════════════════════
+
+_ltp_instance = None
+
+def _get_ltp():
+    """延迟加载 ltp 依存句法分析器。"""
+    global _ltp_instance
+    if _ltp_instance is None:
+        try:
+            from ltp import LTP
+            _ltp_instance = LTP()
+        except ImportError:
+            _ltp_instance = False
+    return _ltp_instance if _ltp_instance else None
+
+
+def _dependency_split_sentence(sentence):
+    """基于依存句法分析拆分长句。
+    
+    在 COO（并列关系）处拆分，比正则更准确。
+    返回拆分后的句子列表，或 None 表示无法拆分。
+    """
+    ltp = _get_ltp()
+    if ltp is None:
+        return None
+    
+    cn_len = len(re.findall(r'[\u4e00-\u9fff]', sentence))
+    if cn_len < 30:
+        return None
+    
+    try:
+        dep = ltp.dep([sentence])[0]
+        words = dep['word']
+        heads = dep['head']
+        deprels = dep['deprel']
+    except Exception:
+        return None
+    
+    # 找 COO（并列）关系的断点
+    split_indices = []
+    for i in range(len(words)):
+        if deprels[i] == 'COO' and heads[i] != i + 1:
+            # 确认不是第一个词（避免截断主语）
+            if i > 0 and i < len(words) - 1:
+                split_indices.append(i)
+    
+    if not split_indices:
+        return None
+    
+    # 取最接近中间的断点
+    mid = len(words) // 2
+    best_idx = min(split_indices, key=lambda x: abs(x - mid))
+    
+    # 构建左右两部分
+    left_words = words[:best_idx]
+    right_words = words[best_idx:]
+    
+    # 检查右半部分是否有主语，没有则从左半部分继承
+    right_has_subject = any(
+        deprels[best_idx + j] == 'SBV'
+        for j in range(min(3, len(right_words)))
+        if best_idx + j < len(deprels)
+    )
+    
+    left_str = ''.join(left_words)
+    right_str = ''.join(right_words)
+    
+    if not right_has_subject and left_words:
+        # 尝试从左半部分提取主语
+        for j in range(len(left_words)):
+            if best_idx + j < len(deprels) and deprels[j] == 'SBV':
+                # 找到主语，加到右半部分
+                subject = left_words[j]
+                if not right_str.startswith(subject):
+                    right_str = subject + right_str
+                break
+    
+    left_cn = len(re.findall(r'[\u4e00-\u9fff]', left_str))
+    right_cn = len(re.findall(r'[\u4e00-\u9fff]', right_str))
+    
+    if left_cn < 4 or right_cn < 4:
+        return None
+    
+    return [left_str + '。', right_str]
+
+
+def split_long_sentences_v2(text):
+    """增强版长句拆分：优先用依存句法，回退到正则。
+    
+    对每个长句先尝试 ltp 依存分析拆分，失败则回退到正则方案。
+    """
+    # 从配置文件读取参数
+    split_min_cn = _RCFG.get('split_min_cn', 25)
+    dep_split_prob = _RCFG.get('dep_split_prob', 0.5)
+    bujin_prob = _RCFG.get('split_bujin_prob', 0.5)
+
+    parts = re.split(r'([。！？])', text)
+    result = []
+    
+    for i in range(len(parts)):
+        segment = parts[i]
+        if re.fullmatch(r'[。！？]', segment):
+            result.append(segment)
+            continue
+        
+        cn_len = len(re.findall(r'[\u4e00-\u9fff]', segment))
+        if cn_len < split_min_cn:
+            result.append(segment)
+            continue
+        
+        # 尝试依存句法拆分
+        dep_result = _dependency_split_sentence(segment)
+        if dep_result and random.random() < dep_split_prob:
+            result.extend(dep_result)
+            continue
+        
+        # 回退到正则拆分（原有逻辑）
+        # 尝试在"不仅...还/也"处拆分
+        m = re.search(r'(?P<before>[\u4e00-\u9fff]{2,10})不仅(?P<A>[^，,。]{2,25})[，,]\s*(?:还|也|更)(?P<B>.+)', segment)
+        if m and random.random() < bujin_prob:
+            if m.start() == 0 or segment[m.start() - 1] in '，。！？':
+                subj = m.group('before').strip()
+                result.append(f'{subj}不仅{m.group("A")}。{subj}{m.group("B").strip()}')
+                continue
+
+        # 尝试在"，同时/并且/而且"处拆分
+        m = re.search(r'(?P<before>.+?)[，,]\s*(?:同时|并且|而且)(?P<after>.+)', segment)
+        if m and cn_len > 30 and random.random() < 0.4:
+            result.append(f'{m.group("before").strip()}。{m.group("after").strip()}')
+            continue
+
+        # 尝试在"，从而/进而"处拆分
+        m = re.search(r'(?P<before>.+?)[，,]\s*(?:从而|进而)(?P<after>.+)', segment)
+        if m and cn_len > 30 and random.random() < 0.4:
+            result.append(f'{m.group("before").strip()}。这样一来，{m.group("after").strip()}')
+            continue
+
+        result.append(segment)
+    
     return ''.join(result)
 
 
@@ -567,6 +798,14 @@ def merge_short_sentences(text):
 
 def _merge_short_sentences_in_paragraph(text):
     """在单个段落内合并短句。调用方负责段落切分。"""
+    # 从配置文件读取参数
+    merge_prob = _RCFG.get('merge_short_prob', 0.4)
+    short_cn_threshold = _RCFG.get('merge_short_cn_threshold', 10)
+    short_frac_threshold = _RCFG.get('merge_short_frac_threshold', 0.20)
+    max_single_cn = _RCFG.get('merge_short_max_single_cn', 20)
+    max_combined_cn = _RCFG.get('merge_short_max_combined_cn', 45)
+    shared_range = _RCFG.get('merge_shared_subject_range', [2, 6])
+
     parts = re.split(r'([。])', text)
     if len(parts) < 5:  # 至少需要 2 个完整句子
         return text
@@ -591,8 +830,8 @@ def _merge_short_sentences_in_paragraph(text):
     # humanize merged away natural short sentences.
     cn_lens = [len(re.findall(r'[\u4e00-\u9fff]', s)) for s, _ in sentences]
     if cn_lens:
-        short_frac = sum(1 for l in cn_lens if l < 10) / len(cn_lens)
-        if short_frac >= 0.20:  # text already human-like burstiness
+        short_frac = sum(1 for l in cn_lens if l < short_cn_threshold) / len(cn_lens)
+        if short_frac >= short_frac_threshold:  # text already human-like burstiness
             return text
 
     result = []
@@ -606,10 +845,10 @@ def _merge_short_sentences_in_paragraph(text):
             cn2 = len(re.findall(r'[\u4e00-\u9fff]', s2))
 
             # 两个都比较短，且共享前缀（主语）
-            if cn1 < 20 and cn2 < 20 and cn1 + cn2 < 45:
+            if cn1 < max_single_cn and cn2 < max_single_cn and cn1 + cn2 < max_combined_cn:
                 # 提取共享主语（2-6 个中文字）
                 shared = _find_shared_subject(s1, s2)
-                if shared and random.random() < 0.4:
+                if shared and random.random() < merge_prob:
                     # 去掉第二句的主语
                     s2_trimmed = s2[len(shared):].lstrip('，,也还更')
                     if s2_trimmed and len(s2_trimmed) > 2:
@@ -663,7 +902,7 @@ def reorder_mid_sentences(text):
     """在段落内部对中间句子做小幅位置调整。
 
     规则：
-    - 如果一段有 4+ 个句子，随机交换中间 2 个句子的位置
+    - 如果一段有 min_sentences+ 个句子，随机交换中间 2 个句子的位置
     - 保留首句和尾句不动
     - 每段最多交换一次
 
@@ -673,6 +912,10 @@ def reorder_mid_sentences(text):
     Returns:
         重排后的文本
     """
+    # 从配置文件读取参数
+    min_sentences = _RCFG.get('reorder_min_sentences', 4)
+    swap_prob = _RCFG.get('reorder_swap_prob', 0.5)
+
     paragraphs = text.split('\n\n')
     if not paragraphs:
         return text
@@ -694,8 +937,8 @@ def reorder_mid_sentences(text):
         if len(parts) % 2 == 1 and parts[-1].strip():
             sentences.append(parts[-1])
 
-        # 4+ 句子时交换中间两个
-        if len(sentences) >= 4 and random.random() < 0.5:
+        # min_sentences+ 句子时交换中间两个
+        if len(sentences) >= min_sentences and random.random() < swap_prob:
             mid_indices = list(range(1, len(sentences) - 1))
             if len(mid_indices) >= 2:
                 i1, i2 = random.sample(mid_indices, 2)
@@ -721,7 +964,7 @@ _AI_FILLER_PHRASES = [
 ]
 
 
-def remove_ai_fillers(text, delete_prob=0.5):
+def remove_ai_fillers(text, delete_prob=None):
     """以一定概率直接删除已知的 AI 废话连接词。
 
     与同义替换不同，这里是直接删除（而非换一个说法），
@@ -729,11 +972,13 @@ def remove_ai_fillers(text, delete_prob=0.5):
 
     Args:
         text: 输入中文文本
-        delete_prob: 删除概率 (0-1)，默认 0.5
+        delete_prob: 删除概率 (0-1)，默认从配置文件读取
 
     Returns:
         清理后的文本
     """
+    if delete_prob is None:
+        delete_prob = _RCFG.get('filler_delete_prob', 0.5)
     for phrase in _AI_FILLER_PHRASES:
         # 匹配 "废话，" 或 "废话。" 开头的模式
         # 例如 "综上所述，" → 删除整个前缀
@@ -804,7 +1049,7 @@ _COMMA_BEFORE_MARKERS = (
 )
 
 
-def boost_comma_density(text, target=4.7):
+def boost_comma_density(text, target=None):
     """Insert commas at safe natural-pause points when density is below target.
 
     HC3 calibration: humans median 5.30/100 chars, AI 3.81. detect_cn flags
@@ -818,13 +1063,17 @@ def boost_comma_density(text, target=4.7):
 
     Args:
         text: input text (already passed through other restructure steps)
-        target: target density per 100 non-whitespace chars (default 4.7)
+        target: target density per 100 non-whitespace chars (默认从配置文件读取)
 
     Returns:
         text with 0+ commas added
     """
+    if target is None:
+        target = _RCFG.get('comma_density_target', 4.7)
+    # 从配置文件读取最小文本长度
+    min_text_len = _RCFG.get('comma_min_text_len', 100)
     non_ws = sum(1 for c in text if not c.isspace())
-    if non_ws < 100:
+    if non_ws < min_text_len:
         return text
     commas = text.count('，') + text.count(',')
     current = commas / non_ws * 100
@@ -901,23 +1150,29 @@ def _dialogue_density(text):
     return n / max(1, len(text))
 
 
-def insert_short_reactions(text, target_short_frac=None, max_per_paragraph=1, seed=None, min_sentences=3, scene='general'):
+def insert_short_reactions(text, target_short_frac=None, max_per_paragraph=None, seed=None, min_sentences=None, scene='general'):
     """Inject short reaction sentences at paragraph seams where short_frac is low.
 
     Only injects when:
-      - paragraph has at least 3 sentences
+      - paragraph has at least min_sentences sentences
       - current short-sentence fraction (< 10 chars) is below target
       - at least one sentence is > 20 chars (good anchor for the insertion)
 
     Args:
         text: input text (paragraphs split by \\n\\n)
-        target_short_frac: stop inserting once short_frac reaches this
-        max_per_paragraph: hard cap on insertions per paragraph
+        target_short_frac: stop inserting once short_frac reaches this (默认从配置文件读取)
+        max_per_paragraph: hard cap on insertions per paragraph (默认从配置文件读取)
         seed: pass to seed random choice (caller-managed usually)
 
     Returns:
         text with 0 or more short reactions inserted
     """
+    # 从配置文件读取默认参数
+    if max_per_paragraph is None:
+        max_per_paragraph = _RCFG.get('reaction_max_per_paragraph', 1)
+    if min_sentences is None:
+        min_sentences = _RCFG.get('reaction_min_sentences', 3)
+
     if seed is not None:
         random.seed(seed)
     # Narrative guard: "颇有道理/事出有因" reactions fit essay/opinion text but
@@ -927,7 +1182,7 @@ def insert_short_reactions(text, target_short_frac=None, max_per_paragraph=1, se
     if _dialogue_density(text) >= 0.08:
         return text
     if target_short_frac is None:
-        target_short_frac = 0.22 if scene == 'academic' else 0.15
+        target_short_frac = _RCFG.get('reaction_target_short_frac_academic', 0.22) if scene == 'academic' else _RCFG.get('reaction_target_short_frac_general', 0.15)
     paragraphs = text.split('\n\n')
     return '\n\n'.join(
         _insert_reactions_in_paragraph(p, target_short_frac, max_per_paragraph, min_sentences, scene)
@@ -986,7 +1241,7 @@ def _insert_reactions_in_paragraph(p, target, max_per, min_sentences=3, scene='g
 #  句长多样化（针对句长 burstiness 检测器）
 # ═══════════════════════════════════════════════════════════════════
 
-def diversify_sentence_lengths(text, target_cv=0.42, target_short_frac=0.10):
+def diversify_sentence_lengths(text, target_cv=None, target_short_frac=None):
     """Split long sentences at commas to boost sentence-length CV.
 
     HC3 300+300 calibration shows AI Chinese text has sentence-length CV ~0.32
@@ -999,12 +1254,16 @@ def diversify_sentence_lengths(text, target_cv=0.42, target_short_frac=0.10):
 
     Args:
         text: input text
-        target_cv: stop once CV reaches this
-        target_short_frac: stop once fraction of <10-char sentences reaches this
+        target_cv: stop once CV reaches this (默认从配置文件读取)
+        target_short_frac: stop once fraction of <10-char sentences reaches this (默认从配置文件读取)
 
     Returns:
         text with more varied sentence lengths
     """
+    if target_cv is None:
+        target_cv = _RCFG.get('diversify_target_cv', 0.42)
+    if target_short_frac is None:
+        target_short_frac = _RCFG.get('diversify_target_short_frac', 0.10)
     paragraphs = text.split('\n\n')
     return '\n\n'.join(
         _diversify_in_paragraph(p, target_cv, target_short_frac)
@@ -1180,14 +1439,15 @@ def deep_restructure(text, aggressive=False, scene='general'):
     Returns:
         深度改写后的文本
     """
-    strength = 0.6 if aggressive else 0.4
-    delete_prob = 0.6 if aggressive else 0.35
+    # 从配置文件读取强度和删除概率
+    strength = _RCFG.get('deep_strength_aggressive', 0.6) if aggressive else _RCFG.get('deep_strength_normal', 0.4)
+    delete_prob = _RCFG.get('deep_delete_prob_aggressive', 0.6) if aggressive else _RCFG.get('deep_delete_prob_normal', 0.35)
 
     # 1. 句式结构变换
     text = restructure_sentences(text, strength=strength)
 
-    # 2. 长句拆分
-    text = split_long_sentences(text)
+    # 2. 长句拆分（增强版：依存句法优先）
+    text = split_long_sentences_v2(text)
 
     # 3. 短句合并
     text = merge_short_sentences(text)
@@ -1202,7 +1462,8 @@ def deep_restructure(text, aggressive=False, scene='general'):
     # detect_cn threshold 4.5, human mean 5.30. Target 5.0 gives headroom for
     # downstream xhs/style transforms that dilute density by adding non-comma
     # chars (emojis, symbols). Cycle 35 (E-2), retuned cycle 37 (E-4).
-    text = boost_comma_density(text, target=5.0)
+    comma_target = _RCFG.get('deep_comma_density_target', 5.0)
+    text = boost_comma_density(text, target=comma_target)
 
     # 5. 信息重排（仅对多段落文本生效）
     if '\n\n' in text:

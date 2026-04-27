@@ -12,15 +12,90 @@ import json
 import os
 import argparse
 
+# ─── 配置加载 ───
+from config_loader import load_config as _load_cfg
+_CFG = _load_cfg()
+_HCFG = _CFG.get('humanize', {})
+_GCFG = _CFG.get('global', {})
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
+
+def _load_protected_terms(scene):
+    """从 protected_terms.json 加载术语白名单。
+
+    返回包含当前场景及 general 分类下所有术语的集合。
+    """
+    pt_file = os.path.join(SCRIPT_DIR, 'protected_terms.json')
+    if not os.path.exists(pt_file):
+        return set()
+    try:
+        with open(pt_file, 'r', encoding='utf-8') as f:
+            pt_data = json.load(f)
+        terms = set()
+        for key in [scene, 'general']:
+            terms.update(pt_data.get(key, []))
+        return terms
+    except (json.JSONDecodeError, OSError):
+        return set()
+
+
+# ─── jieba 词性标注（懒加载） ───
+_jieba = None
+
+def _get_jieba():
+    """懒加载 jieba.posseg 模块，用于词性感知替换。"""
+    global _jieba
+    if _jieba is None:
+        try:
+            import jieba
+            import jieba.posseg as pseg
+            _jieba = pseg
+        except ImportError:
+            _jieba = False
+    return _jieba if _jieba else None
+
+
+def _get_word_pos(word, context_sentence):
+    """获取词语在上下文中的词性标签（使用 jieba）。"""
+    pseg = _get_jieba()
+    if pseg is None:
+        return None
+    try:
+        words = pseg.cut(context_sentence)
+        for w, flag in words:
+            if w == word:
+                # 简化词性为类别
+                if flag.startswith('n'): return 'n'  # 名词
+                if flag.startswith('v'): return 'v'  # 动词
+                if flag.startswith('a'): return 'a'  # 形容词
+                if flag.startswith('d'): return 'd'  # 副词
+                if flag.startswith('c'): return 'c'  # 连词
+                if flag.startswith('u'): return 'u'  # 助词
+                return flag[:1]
+    except Exception:
+        pass
+    return None
+
+
+def _candidate_pos_match(word_pos, candidate, context_sentence):
+    """检查候选词在给定上下文中是否具有匹配的词性。"""
+    if word_pos is None:
+        return True  # 无法检查，允许
+    cand_pos = _get_word_pos(candidate, context_sentence)
+    if cand_pos is None:
+        return True  # 无法检查，允许
+    return word_pos == cand_pos
+
+
 # Module-level flag: whether to apply noise strategies (strategies 2 & 3)
-_USE_NOISE = True
+# 从配置文件读取，CLI 参数可覆盖
+_USE_NOISE = _GCFG.get('use_noise', True)
 
 # Module-level flag: whether to expand candidates with CiLin synonyms dict
 # (~40K words, offline). Off by default for deterministic-ish behavior; opt-in
 # via --cilin CLI flag.
-_USE_CILIN = False
+_USE_CILIN = _GCFG.get('use_cilin', False)
 
 # Import n-gram statistical model for perplexity feedback
 try:
@@ -32,7 +107,8 @@ except ImportError:
         ngram_analyze = None
 
 # Module-level flag: whether to use stats optimization (can be toggled by CLI)
-_USE_STATS = True
+# 从配置文件读取，CLI 参数可覆盖
+_USE_STATS = _GCFG.get('use_stats', True)
 PATTERNS_FILE = os.path.join(SCRIPT_DIR, 'patterns_cn.json')
 
 def load_config():
@@ -133,6 +209,15 @@ def pick_best_replacement(sentence, old, candidates):
         scored.append((candidate, ppl_result.get('perplexity', 0)))
 
     scored.sort(key=lambda x: x[1])
+
+    # 词性感知过滤：仅保留词性匹配的候选词
+    if scored and len(scored) > 1:
+        word_pos = _get_word_pos(old, sentence)
+        if word_pos is not None:
+            pos_filtered = [(c, s) for c, s in scored if _candidate_pos_match(word_pos, c, sentence)]
+            if pos_filtered:
+                scored = pos_filtered
+
     n = len(scored)
     if n <= 2:
         return scored[-1][0]
@@ -416,24 +501,35 @@ NOISE_EXPRESSIONS = {
     'hedging': ['说实话', '坦白讲', '客观地说', '实事求是地讲', '平心而论',
                 '老实说', '不夸张地说', '公正地看'],
     'self_correction': ['或者说', '准确地讲', '换个角度看', '严格来说',
-                        '更确切地说', '往深了讲', '细想一下'],
+                        '更确切地说', '往深了讲', '细想一下', '不过话说回来',
+                        '退一步讲', '换个说法'],
     'uncertainty': ['大概', '差不多', '似乎', '或许', '多少有些',
-                    '约莫', '估摸着', '八成'],
+                    '约莫', '估摸着', '八成', '不好说', '不好下定论'],
     'transition_casual': ['话说回来', '反过来看', '换句话说', '说到这里',
-                          '再往下想', '回过头看', '顺着这个思路'],
+                          '再往下想', '回过头看', '顺着这个思路', '不过转念一想'],
     'filler': ['当然了', '其实', '说到底', '怎么说呢', '不瞒你说',
-               '你别说', '讲真', '这么说吧'],
+               '你别说', '讲真', '这么说吧', '实不相瞒'],
     'personal': ['我觉得', '在我看来', '依我之见', '以我的经验',
-                 '在我的理解里', '就我所知', '我个人倾向于'],
+                 '在我的理解里', '就我所知', '我个人倾向于', '凭我的感觉'],
 }
 
 # Academic-safe categories (no oral fillers or personal opinions)
-NOISE_ACADEMIC_CATEGORIES = ['hedging', 'self_correction', 'uncertainty']
+NOISE_ACADEMIC_CATEGORIES = ['hedging', 'self_correction', 'uncertainty', 'qualification']
 # Academic-specific hedging (more formal)
 NOISE_ACADEMIC_EXPRESSIONS = {
-    'hedging': ['客观地说', '实事求是地讲', '平心而论', '公正地看'],
-    'self_correction': ['准确地讲', '严格来说', '更确切地说', '往深了讲'],
-    'uncertainty': ['大致', '似乎', '或许', '多少', '在一定程度上'],
+    'hedging': ['客观地说', '实事求是地讲', '平心而论', '公正地看', '从现有证据来看'],
+    'self_correction': [
+        '准确地讲', '严格来说', '更确切地说', '往深了讲',
+        '当然，这一结论也有其局限性', '不过这一判断需要更多数据支撑',
+        '从另一个角度看，情况可能更复杂', '需要补充的是',
+        '这一发现的前提条件不容忽视', '值得注意的是这一推论的适用范围',
+    ],
+    'uncertainty': ['大致', '似乎', '或许', '多少', '在一定程度上', '在某种意义上'],
+    'qualification': [
+        '当然，这取决于具体情境', '这一趋势是否持续还有待观察',
+        '不过，样本量有限的情况下需谨慎解读', '从方法论角度看，这一结论仍需验证',
+        '至少在当前数据范围内如此', '这一推论的有效性受限于研究设计',
+    ],
 }
 
 
@@ -450,15 +546,17 @@ def _load_bigram_freq():
     return freq.get('bigrams', {})
 
 
-def reduce_high_freq_bigrams(text, strength=0.3, scene='general'):
+def reduce_high_freq_bigrams(text, strength=None, scene='general'):
     """
     策略1: 扫描文本中的高频 bigram，尝试用低频同义替换降低可预测性。
-    strength: 0-1，控制替换比例。
+    strength: 0-1，控制替换比例。默认从配置文件读取。
     scene: 'general' / 'academic' / 'social' —
       - academic: 跳过 ACADEMIC_PRESERVE_WORDS，候选过 ACADEMIC_BLACKLIST_CANDIDATES
 
     使用基于词的替换（非位置），避免长度变化导致的错位问题。
     """
+    if strength is None:
+        strength = _HCFG.get('bigram_strength', 0.3)
     bigram_freq = _load_bigram_freq()
     if not bigram_freq:
         return _simple_synonym_pass(text, strength, scene=scene)
@@ -468,6 +566,8 @@ def reduce_high_freq_bigrams(text, strength=0.3, scene='general'):
         return text
 
     preserve = ACADEMIC_PRESERVE_WORDS if scene == 'academic' else set()
+    # 合并 JSON 术语白名单
+    preserve = preserve | _load_protected_terms(scene)
 
     # Step 1: Score each WORD_SYNONYMS word by its surrounding bigram frequency
     word_scores = []  # (word, total_bigram_freq, count_in_text)
@@ -502,6 +602,13 @@ def reduce_high_freq_bigrams(text, strength=0.3, scene='general'):
         candidates = _filter_candidates_for_scene(word, WORD_SYNONYMS[word], scene)
         if _USE_CILIN:
             candidates = expand_with_cilin(word, candidates, scene)
+
+        # 词性感知过滤
+        word_pos = _get_word_pos(word, text[:text.find(word) + len(word) + 20])
+        if word_pos is not None:
+            pos_candidates = [c for c in candidates if _candidate_pos_match(word_pos, c, text)]
+            if pos_candidates:
+                candidates = pos_candidates
 
         # Rank candidates by bigram frequency ascending (rarest first)
         ranked = []
@@ -580,6 +687,8 @@ def _simple_synonym_pass(text, strength=0.3, scene='general'):
     scene: 'academic' filters PRESERVE words and BLACKLIST candidates.
     """
     preserve = ACADEMIC_PRESERVE_WORDS if scene == 'academic' else set()
+    # 合并 JSON 术语白名单
+    preserve = preserve | _load_protected_terms(scene)
     found = []
     for word in WORD_SYNONYMS:
         if word in preserve:
@@ -638,8 +747,8 @@ def randomize_sentence_lengths(text, aggressive=False, seed=None):
     if len(sentences) < 4:
         return text
 
-    merge_rate = 0.15 if not aggressive else 0.25
-    truncate_rate = 0.15 if not aggressive else 0.25
+    merge_rate = _HCFG.get('randomize_merge_rate', 0.15) if not aggressive else _HCFG.get('randomize_merge_rate_aggressive', 0.25)
+    truncate_rate = _HCFG.get('randomize_truncate_rate', 0.15) if not aggressive else _HCFG.get('randomize_truncate_rate_aggressive', 0.25)
 
     result = []
     i = 0
@@ -745,12 +854,38 @@ def _dialogue_density_local(text):
 _NARRATIVE_SAFE_CATEGORIES = ['hedging', 'uncertainty', 'self_correction']
 
 
-def inject_noise_expressions(text, density=0.15, style='general'):
+def _has_transition_between(sent_a, sent_b):
+    """检查两句之间是否已有逻辑连接词。"""
+    connectors = {
+        '然而', '但是', '不过', '因此', '所以', '此外', '同时',
+        '而且', '另外', '总之', '综上', '首先', '其次', '最后',
+        '同时', '并且', '从而', '进而', '于是', '因而',
+        '另一方面', '相反', '反之', '不过', '可是',
+    }
+    for conn in connectors:
+        if sent_b.lstrip().startswith(conn):
+            return True
+    return False
+
+
+def _is_declarative(sentence):
+    """检查句子是否为陈述句（非疑问/感叹）。"""
+    s = sentence.strip()
+    if s.endswith('？') or s.endswith('?') or s.endswith('！') or s.endswith('!'):
+        return False
+    if any(s.startswith(q) for q in ['为什么', '怎么', '如何', '是否', '难道', '哪']):
+        return False
+    return True
+
+
+def inject_noise_expressions(text, density=None, style='general'):
     """
     策略3: 在句子间或句中适当位置插入噪声表达。
-    density: 大约每多少句插入一个（0.15 ≈ 每 6-7 句一个）
+    density: 大约每多少句插入一个（默认从配置文件读取）
     style: general / academic
     """
+    if density is None:
+        density = _HCFG.get('noise_density', 0.15)
     if style == 'academic':
         categories = NOISE_ACADEMIC_CATEGORIES
         expressions = NOISE_ACADEMIC_EXPRESSIONS
@@ -791,6 +926,13 @@ def inject_noise_expressions(text, density=0.15, style='general'):
         # expression into a quoted line puts narrator filler inside a
         # character's mouth \u2014 awkward and breaks dialogue flow.
         if '"' in s_text or '\u201c' in s_text or '\u201d' in s_text or '\u300c' in s_text or '\u300d' in s_text:
+            continue
+        # 语义感知：只在两句之间没有转折词时才插入
+        if i + 1 < len(sentences):
+            next_text = sentences[i + 1][0]
+            if _has_transition_between(s_text, next_text):
+                continue
+        if not _is_declarative(s_text):
             continue
         if random.random() > density:
             continue
@@ -903,8 +1045,10 @@ def replace_phrases(text, casualness=0.3):
 
     return text
 
-def merge_short_sentences(text, min_len=8):
+def merge_short_sentences(text, min_len=None):
     """Merge overly short consecutive sentences, with burstiness guard."""
+    if min_len is None:
+        min_len = _HCFG.get('merge_short_min_len', 8)
     # Measure burstiness before restructuring
     burst_before = _compute_burstiness(text)
 
@@ -952,8 +1096,10 @@ def merge_short_sentences(text, min_len=8):
 
     return new_text
 
-def split_long_sentences(text, max_len=80):
+def split_long_sentences(text, max_len=None):
     """Split overly long sentences at natural breakpoints, with burstiness guard."""
+    if max_len is None:
+        max_len = _HCFG.get('split_long_max_len', 80)
     burst_before = _compute_burstiness(text)
 
     sentences = re.split(r'([。！？])', text)
@@ -1009,6 +1155,11 @@ def split_long_sentences(text, max_len=80):
 
 def vary_paragraph_rhythm(text):
     """Break uniform paragraph lengths by merging or splitting"""
+    # 从配置文件读取段落节奏参数
+    para_merge_factor = _HCFG.get('paragraph_merge_factor', 0.6)
+    para_split_factor = _HCFG.get('paragraph_split_factor', 1.5)
+    para_merge_prob = _HCFG.get('paragraph_merge_prob', 0.4)
+
     paragraphs = text.split('\n\n')
     if len(paragraphs) < 3:
         return text
@@ -1023,16 +1174,16 @@ def vary_paragraph_rhythm(text):
         
         # Randomly merge short adjacent paragraphs
         if (i + 1 < len(paragraphs) and
-            len(para) < avg_len * 0.6 and
-            len(paragraphs[i + 1]) < avg_len * 0.6 and
-            random.random() < 0.4):
+            len(para) < avg_len * para_merge_factor and
+            len(paragraphs[i + 1]) < avg_len * para_merge_factor and
+            random.random() < para_merge_prob):
             merged = para + '\n' + paragraphs[i + 1]
             result.append(merged)
             i += 2
             continue
         
         # Split long paragraphs
-        if len(para) > avg_len * 1.5:
+        if len(para) > avg_len * para_split_factor:
             sentences = re.split(r'([。！？])', para)
             mid = len(sentences) // 2
             # Ensure we split at a sentence boundary (every other element is punctuation)
@@ -1070,13 +1221,16 @@ def reduce_punctuation(text):
     
     return text
 
-def cap_transition_density(text, target=6.0):
+def cap_transition_density(text, target=None):
     """Drop clause-initial transition phrases until density <= target.
 
     Runs AFTER all other humanize passes. Keeps transitions that are
     low-density already; removes excess probabilistically. Detect threshold
     fires at density > 8 per 1000 chars, so target 6 gives margin.
+    默认从配置文件读取 target。
     """
+    if target is None:
+        target = _HCFG.get('transition_density_target', 6.0)
     try:
         from ngram_model import _TRANSITION_PHRASES
     except ImportError:
@@ -1197,6 +1351,8 @@ def shorten_paragraphs(text, max_length=150):
 
 def diversify_vocabulary(text):
     """Reduce word repetition by using synonyms"""
+    # 从配置文件读取重复阈值
+    repeat_threshold = _HCFG.get('diversify_repeat_threshold', 2)
     # Common overused words and their alternatives
     diversity_map = {
         '进行': ['做', '开展', '实施', '推进'],
@@ -1214,8 +1370,10 @@ def diversify_vocabulary(text):
     }
     
     for word, alts in diversity_map.items():
+        if word in _ZIPF_BOOST_WORDS:
+            continue  # 跳过 Zipf 提升的词
         count = text.count(word)
-        if count > 2:
+        if count > repeat_threshold:
             # Keep first occurrence, replace subsequent
             first = True
             parts = text.split(word)
@@ -1230,6 +1388,69 @@ def diversify_vocabulary(text):
             text = ''.join(result)
     
     return text
+
+# ─── Zipf 词频扰动 ───
+_ZIPF_BOOST_WORDS = set()
+
+
+def zipf_perturb(text, scene='general'):
+    """注入受控的词语重复，模拟人类 Zipf 式词频分布。
+
+    AI 文本的词频过于均匀（高熵），人类会不自觉地重复某些词语。
+    此函数选取 3-5 个非核心词，将其频率提升 1.5-2 倍。
+    实际效果：标记这些词，使 diversify_vocabulary() 跳过它们。
+    """
+    global _ZIPF_BOOST_WORDS
+
+    pseg = _get_jieba()
+    if pseg is None:
+        return text  # jieba 不可用，跳过
+
+    # 加载术语白名单
+    protected = set()
+    pt_file = os.path.join(SCRIPT_DIR, 'protected_terms.json')
+    if os.path.exists(pt_file):
+        try:
+            with open(pt_file, 'r', encoding='utf-8') as f:
+                pt_data = json.load(f)
+            for scene_key in [scene, 'general']:
+                protected.update(pt_data.get(scene_key, []))
+        except (json.JSONDecodeError, OSError):
+            pass
+    protected.update(ACADEMIC_PRESERVE_WORDS)
+
+    # 使用 jieba 统计词频
+    try:
+        words = list(pseg.cut(text))
+    except Exception:
+        return text
+
+    freq = {}
+    for w, flag in words:
+        if len(w) >= 2 and '\u4e00' <= w[0] <= '\u9fff':
+            if w not in protected and not flag.startswith('w'):  # 跳过标点
+                freq[w] = freq.get(w, 0) + 1
+
+    if not freq:
+        return text
+
+    # 找出出现 freq_range 范围内的词（中等频率，适合提升）
+    freq_range = _HCFG.get('zipf_freq_range', [2, 4])
+    boost_min = _HCFG.get('zipf_boost_count_min', 2)
+    boost_max = _HCFG.get('zipf_boost_count_max', 5)
+    candidates = [(w, f) for w, f in freq.items() if freq_range[0] <= f <= freq_range[1] and w not in WORD_SYNONYMS]
+    if not candidates:
+        return text
+
+    # 选取 boost_min-boost_max 个词进行提升
+    n_boost = min(boost_max, max(boost_min, len(candidates) // 10))
+    boost_words = random.sample(candidates, min(n_boost, len(candidates)))
+
+    # 标记这些词，使 diversify_vocabulary() 跳过它们
+    _ZIPF_BOOST_WORDS = set(w for w, _ in boost_words)
+
+    return text
+
 
 # ─── Main Humanize Pipeline ───
 
@@ -1249,7 +1470,8 @@ def _estimate_source_aiscore(text):
         return None
 
 
-DEFAULT_BEST_OF_N = 10
+# 从配置文件读取默认 best_of_n 值
+DEFAULT_BEST_OF_N = _GCFG.get('default_best_of_n', 10)
 
 
 def humanize(text, scene='general', aggressive=False, seed=None, best_of_n=DEFAULT_BEST_OF_N):
@@ -1290,19 +1512,36 @@ def humanize(text, scene='general', aggressive=False, seed=None, best_of_n=DEFAU
     if seed is not None:
         random.seed(seed)
 
+    # 从配置文件读取参数
+    _h = _HCFG
+    tier_full = _h.get('tier_thresholds', {}).get('full', 25)
+    tier_moderate = _h.get('tier_thresholds', {}).get('moderate', 5)
+    aggressive_casualness_boost = _h.get('aggressive_casualness_boost', 0.3)
+    bigram_str = _h.get('bigram_strength', 0.3)
+    bigram_str_agg = _h.get('bigram_strength_aggressive', 0.5)
+    bigram_moderate_factor = _h.get('bigram_strength_moderate_factor', 0.6)
+    noise_dens = _h.get('noise_density', 0.15)
+    noise_dens_agg = _h.get('noise_density_aggressive', 0.25)
+    trans_target = _h.get('transition_density_target', 6.0)
+    trans_target_long = _h.get('transition_density_target_long', 3.0)
+    long_thresh = _h.get('long_text_threshold', 1500)
+    ppl_repair_range = _h.get('ppl_repair_range', [0, 350])
+    ppl_repair_max = _h.get('ppl_repair_max_sentences', 5)
+    burst_retreat = _h.get('burstiness_retreat_threshold', 0.8)
+
     config = SCENES.get(scene, SCENES['general'])
     casualness = config.get('casualness', 0.3)
     if aggressive:
-        casualness = min(1.0, casualness + 0.3)
+        casualness = min(1.0, casualness + aggressive_casualness_boost)
 
     source_score = _estimate_source_aiscore(text)
     # Tier thresholds calibrated on HC3-Chinese: most naturally-written ChatGPT
     # scores 5-25 on detect_cn. Full pipeline on very-clean input (< 5) adds
     # spurious noise. Moderate tier skips noise/sentence-randomization but keeps
     # everything else. Trade picks up most of the full-tier gains with fewer regressions.
-    if aggressive or source_score is None or source_score >= 25:
+    if aggressive or source_score is None or source_score >= tier_full:
         tier = 'full'
-    elif source_score >= 5:
+    elif source_score >= tier_moderate:
         tier = 'moderate'
     else:
         tier = 'conservative'
@@ -1332,6 +1571,7 @@ def humanize(text, scene='general', aggressive=False, seed=None, best_of_n=DEFAU
     # Pass 3: Rhythm and variety — diversify all tiers, rhythm only moderate+
     text = reduce_punctuation(text)
     text = diversify_vocabulary(text)
+    text = zipf_perturb(text, scene=scene)
     if tier != 'conservative' and config.get('rhythm_variation', False):
         text = vary_paragraph_rhythm(text)
 
@@ -1347,15 +1587,15 @@ def humanize(text, scene='general', aggressive=False, seed=None, best_of_n=DEFAU
     # ── Perplexity-boosting strategies — tier-gated ──
     # Bigram substitution active in moderate+full (safe, targeted)
     if tier != 'conservative':
-        bigram_strength = 0.5 if aggressive else 0.3
+        bigram_strength = bigram_str_agg if aggressive else bigram_str
         if tier == 'moderate':
-            bigram_strength *= 0.6
+            bigram_strength *= bigram_moderate_factor
         text = reduce_high_freq_bigrams(text, strength=bigram_strength, scene=scene)
 
     # Noise + sentence randomization only at full tier — these are the operations
     # that on HC3 sometimes added spurious AI patterns to already-clean text.
     if tier == 'full' and _USE_NOISE:
-        noise_density = 0.25 if aggressive else 0.15
+        noise_density = noise_dens_agg if aggressive else noise_dens
         text = inject_noise_expressions(text, density=noise_density, style='general')
         text = randomize_sentence_lengths(text, aggressive=aggressive, seed=seed)
     
@@ -1366,7 +1606,7 @@ def humanize(text, scene='general', aggressive=False, seed=None, best_of_n=DEFAU
     # AI). Drop cap target on long text so novel humanize approaches human 2.4
     # density instead of staying at AI's 4.4 baseline.
     cn_chars = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
-    trans_target = 3.0 if cn_chars >= 1500 else 6.0
+    trans_target = trans_target_long if cn_chars >= long_thresh else trans_target
     text = cap_transition_density(text, target=trans_target)
 
     # Clean up artifacts
@@ -1384,7 +1624,7 @@ def humanize(text, scene='general', aggressive=False, seed=None, best_of_n=DEFAU
         # Threshold: if perplexity is in the "too smooth" zone, try to improve.
         # D-5 (cycle 31): raised 200 → 350 to cover the typical humanized-output
         # perplexity range (~250-300) where indicators still fire.
-        if 0 < ppl < 350 and len(text) >= 100:
+        if ppl_repair_range[0] < ppl < ppl_repair_range[1] and len(text) >= 100:
             sentences = re.split(r'([。！？])', text)
             # Score each sentence
             sent_scores = []
@@ -1399,7 +1639,7 @@ def humanize(text, scene='general', aggressive=False, seed=None, best_of_n=DEFAU
                 # Sort by perplexity ascending (worst = most predictable first)
                 sent_scores.sort(key=lambda x: x[1])
                 # Try to improve the worst 20% (at most 5 sentences)
-                n_fix = min(5, max(1, len(sent_scores) // 5))
+                n_fix = min(ppl_repair_max, max(1, len(sent_scores) // 5))
                 
                 # Use a different random seed for the second pass
                 if seed is not None:

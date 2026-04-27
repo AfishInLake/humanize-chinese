@@ -38,6 +38,12 @@ except ImportError:
         _general_detect = None
         _general_score = None
 
+# ─── 配置加载 ───
+from config_loader import load_config as _load_cfg
+_CFG = _load_cfg()
+_ACFG = _CFG.get('academic', {})
+_GCFG = _CFG.get('global', {})
+
 
 def _compute_general_score(text):
     """Run general detect_cn on text, return (score, issues, metrics) or (None, None, None)."""
@@ -316,12 +322,15 @@ def detect_academic(text):
         pass  # no issue
 
     # ── 3. 段落结构整齐度 ──
+    # ─── 从配置读取段落均匀度阈值 ───
+    _para_cv = _ACFG.get('paragraph_uniformity_cv', 0.18)
+    _para_opener_thresh = _ACFG.get('paragraph_opener_repeat_threshold', 3)
     if len(paragraphs) >= 3:
         lengths = [count_chinese(p) for p in paragraphs]
         avg = sum(lengths) / len(lengths) if lengths else 1
         if avg > 0:
             cv = (sum((l - avg) ** 2 for l in lengths) / len(lengths)) ** 0.5 / avg
-            if cv < 0.18:
+            if cv < _para_cv:
                 issues['paragraph_uniformity'].append({
                     'text': f'段落长度 CV={cv:.2f}，结构过于整齐',
                     'severity': 'high'})
@@ -334,12 +343,14 @@ def detect_academic(text):
                 if re.match(pat, first_sent.strip()):
                     opener_count += 1
                     break
-        if opener_count >= 3:
+        if opener_count >= _para_opener_thresh:
             issues['paragraph_uniformity'].append({
                 'text': f'{opener_count} 个段落使用相似的起始结构',
                 'severity': 'high'})
 
     # ── 4. 逻辑连接词密度 ──
+    # ─── 从配置读取连接词密度阈值 ───
+    _conn_thresh = _ACFG.get('connector_density_threshold', 3.0)
     connector_count = 0
     found_connectors = []
     for c in LOGIC_CONNECTORS:
@@ -349,7 +360,7 @@ def detect_academic(text):
             found_connectors.append(c)
     if char_count > 0:
         density = connector_count / (char_count / 100)
-        threshold = 3.0  # per 100 chars
+        threshold = _conn_thresh  # per 100 chars
         if density > threshold:
             issues['connector_density'].append({
                 'text': f'逻辑连接词密度 {density:.1f}/百字（阈值 {threshold}），共 {connector_count} 个',
@@ -360,6 +371,9 @@ def detect_academic(text):
                     'text': f'  · {c} ×{text.count(c)}', 'severity': 'info'})
 
     # ── 5. 同义表达匮乏 ──
+    # ─── 从配置读取同义重复阈值 ───
+    _syn_repeat_thresh = _ACFG.get('synonym_poverty_repeat_threshold', 4)
+    _syn_display_limit = _ACFG.get('synonym_poverty_display_limit', 5)
     # Find words repeated 3+ times that should have synonyms
     academic_repeat_words = [
         '研究', '分析', '探讨', '论述', '阐述', '表明',
@@ -371,23 +385,26 @@ def detect_academic(text):
     repeat_issues = []
     for w in academic_repeat_words:
         cnt = text.count(w)
-        if cnt >= 4:
+        if cnt >= _syn_repeat_thresh:
             repeat_issues.append((w, cnt))
     repeat_issues.sort(key=lambda x: x[1], reverse=True)
-    for w, cnt in repeat_issues[:5]:
+    for w, cnt in repeat_issues[:_syn_display_limit]:
         issues['synonym_poverty'].append({
             'text': f'"{w}" 重复 {cnt} 次', 'count': cnt, 'severity': 'medium'})
 
     # ── 6. 引用整合度低 ──
+    # ─── 从配置读取引用阈值 ───
+    _cite_min = _ACFG.get('citation_min_count', 3)
+    _cite_ratio = _ACFG.get('citation_template_ratio', 0.6)
     cite_template_count = 0
     for pat in CITATION_TEMPLATES:
         for m in re.finditer(pat, text):
             cite_template_count += 1
     # Count total citations
     total_cites = len(re.findall(r'[（(]\d{4}[）)]', text))
-    if total_cites >= 3 and cite_template_count >= 3:
+    if total_cites >= _cite_min and cite_template_count >= _cite_min:
         ratio = cite_template_count / total_cites if total_cites > 0 else 0
-        if ratio > 0.6:
+        if ratio > _cite_ratio:
             issues['citation_integration'].append({
                 'text': f'{cite_template_count}/{total_cites} 处引用使用模板化表述（比例 {ratio:.0%}）',
                 'severity': 'medium'})
@@ -406,23 +423,29 @@ def detect_academic(text):
                 'text': m.group()[:60] + '...', 'severity': 'medium'})
 
     # ── 9. 结论过于圆满 ──
+    # ─── 从配置读取结论阈值 ───
+    _perf_thresh = _ACFG.get('perfect_conclusion_threshold', 2)
+    _perf_tail = _ACFG.get('perfect_conclusion_tail_start', 0.8)
     # Check last 20% of text for perfect conclusion without limitations
-    tail = text[int(len(text) * 0.8):]
+    tail = text[int(len(text) * _perf_tail):]
     has_limitation = any(m in tail for m in LIMITATION_MARKERS)
     perfect_count = 0
     for phrase in PERFECT_CONCLUSION_PHRASES:
         if re.search(phrase, tail):
             perfect_count += 1
-    if perfect_count >= 2 and not has_limitation:
+    if perfect_count >= _perf_thresh and not has_limitation:
         issues['perfect_conclusion'].append({
             'text': f'结论部分有 {perfect_count} 处圆满表述，且缺少局限性讨论',
             'severity': 'high'})
 
     # ── 10. 语气过于确定 ──
+    # ─── 从配置读取确定性阈值 ───
+    _cert_min = _ACFG.get('certainty_min_count', 3)
+    _cert_max_hedge = _ACFG.get('certainty_max_hedge', 2)
     certain_count = sum(text.count(w) for w in CERTAINTY_MARKERS)
     hedge_count = sum(text.count(w) for w in HEDGING_MARKERS)
     if char_count > 200:
-        if certain_count >= 3 and hedge_count < 2:
+        if certain_count >= _cert_min and hedge_count < _cert_max_hedge:
             issues['certainty_overuse'].append({
                 'text': f'确定性表述 {certain_count} 次，学术留白仅 {hedge_count} 次',
                 'severity': 'high'})
@@ -434,9 +457,13 @@ def detect_academic(text):
     # ── 11. 扩散度 (topic diffusion across paragraphs — 知网 5 维之一) ──
     # Human academic writing evolves topics; AI text repeats same concepts across
     # paragraphs with only paraphrasing. Low diffusion = stuck on one topic.
-    if len(paragraphs) >= 3 and char_count >= 300:
+    # ─── 从配置读取扩散度阈值 ───
+    _td_min_paras = _ACFG.get('topic_diffusion_min_paragraphs', 3)
+    _td_min_chars = _ACFG.get('topic_diffusion_min_chars', 300)
+    _td_threshold = _ACFG.get('topic_diffusion_threshold', 0.5)
+    if len(paragraphs) >= _td_min_paras and char_count >= _td_min_chars:
         diffusion, n_used = topic_diffusion(text)
-        if n_used >= 3 and diffusion < 0.5:
+        if n_used >= _td_min_paras and diffusion < _td_threshold:
             issues['low_topic_diffusion'].append({
                 'text': f'段落扩散度 {diffusion:.2f}（< 0.5，段间主题重叠过高）',
                 'severity': 'medium' if diffusion > 0.35 else 'high'})
@@ -526,29 +553,40 @@ def calculate_academic_score(issues):
             if sev == 'info':
                 continue
             count = item.get('count', 1)
-            sev_mult = {'critical': 1.5, 'high': 1.0, 'medium': 0.6, 'low': 0.3}.get(sev, 0.6)
+            # ─── 从配置读取严重度乘数 ───
+            _sev_mults = _ACFG.get('severity_multipliers', {})
+            sev_mult = _sev_mults.get(sev, {'critical': 1.5, 'high': 1.0, 'medium': 0.6, 'low': 0.3}.get(sev, 0.6))
             raw += weight * sev_mult * min(count, 5)
     
     # Rule-based score (cap at 60 — A-path 2026-04-19 cycle 20)
-    rule_score = min(60, int(raw * 0.7))
+    # ─── 从配置读取上限和权重 ───
+    _rule_cap = _ACFG.get('rule_score_cap', 60)
+    _rule_mult = _ACFG.get('rule_score_multiplier', 0.7)
+    rule_score = min(_rule_cap, int(raw * _rule_mult))
 
     # Statistical score (cap 40 — raised from 25 after HC3 measurement showed
     # uncapped stat Cohen's d = 1.695, cap=25 was clipping 90% of AI signal).
+    _stat_cap = _ACFG.get('stat_score_cap', 40)
     stat_score = 0
     for dim, items in issues.items():
         if dim.startswith('stat_') and items:
             stat_score += STATISTICAL_WEIGHTS.get(dim, 5)
-    stat_score = min(40, stat_score)
+    stat_score = min(_stat_cap, stat_score)
 
     return min(100, rule_score + stat_score)
 
 
 def score_to_level(score):
-    if score >= 75:
+    # ─── 从配置读取评分等级阈值 ───
+    _levels = _ACFG.get('score_levels', {})
+    _very_high = _levels.get('very_high', 75)
+    _high = _levels.get('high', 50)
+    _medium = _levels.get('medium', 25)
+    if score >= _very_high:
         return 'very_high'
-    elif score >= 50:
+    elif score >= _high:
         return 'high'
-    elif score >= 25:
+    elif score >= _medium:
         return 'medium'
     return 'low'
 
@@ -679,7 +717,8 @@ if not ACADEMIC_REPLACEMENTS:
 
 # Hedging expressions to inject (only multi-char phrases that read well between commas)
 # Module-level flag: whether to use stats optimization
-_USE_STATS = True
+# ─── 从配置读取 ───
+_USE_STATS = _ACFG.get('use_stats', True)
 
 
 def pick_best_replacement(sentence, old, candidates):
@@ -737,7 +776,8 @@ except ImportError:
         inject_noise_expressions = None
 
 # Module-level flag: whether to apply noise strategies
-_USE_NOISE = True
+# ─── 从配置读取 ───
+_USE_NOISE = _ACFG.get('use_noise', True)
 
 HEDGING_INJECTIONS = [
     '在一定程度上', '从某种角度看', '初步来看', '大体上',
@@ -782,6 +822,9 @@ def _replace_academic_phrases(text, aggressive=False):
 def _inject_hedging(text, aggressive=False):
     """Add academic hedging language to overly certain statements.
     Processes paragraph by paragraph to preserve paragraph breaks."""
+    # ─── 从配置读取 hedging 注入参数 ───
+    _hedge_prob_n = _ACFG.get('hedging_inject_prob_normal', 0.14)
+    _hedge_prob_a = _ACFG.get('hedging_inject_prob_aggressive', 0.15)
     paragraphs = text.split('\n\n')
     result_paragraphs = []
     injected = 0
@@ -805,7 +848,7 @@ def _inject_hedging(text, aggressive=False):
                             sent = sent.replace(cm, hedge, 1)
                             injected += 1
                             break
-            elif not has_hedging and random.random() < (0.14 if not aggressive else 0.15) and injected < max_inject:
+            elif not has_hedging and random.random() < (_hedge_prob_n if not aggressive else _hedge_prob_a) and injected < max_inject:
                 # Don't inject hedging right after structural words
                 skip_starters = ['首先', '其次', '最后', '第一', '第二', '第三']
                 starts_structural = any(sent.strip().startswith(s) for s in skip_starters)
@@ -828,9 +871,12 @@ def _add_author_voice(text, aggressive=False):
     """Replace impersonal 'research shows' with author voice.
     Only replaces when the phrase appears at sentence-start positions
     (after period, newline, or at the very beginning)."""
+    # ─── 从配置读取作者声音参数 ───
+    _voice_max_n = _ACFG.get('author_voice_max_normal', 5)
+    _voice_max_a = _ACFG.get('author_voice_max_aggressive', 6)
     impersonal = ['研究表明', '研究发现', '研究显示', '研究指出', '分析表明']
     replaced = 0
-    max_replace = 5 if not aggressive else 6
+    max_replace = _voice_max_n if not aggressive else _voice_max_a
 
     for phrase in impersonal:
         # Only replace at natural sentence boundaries
@@ -852,6 +898,10 @@ def _add_author_voice(text, aggressive=False):
 def _break_uniform_structure(text):
     """Vary paragraph structure to break AI-like uniformity.
     Preserves paragraph breaks (\n\n)."""
+    # ─── 从配置读取结构打破参数 ───
+    _merge_cn = _ACFG.get('break_uniform_merge_cn', 60)
+    _merge_prob = _ACFG.get('break_uniform_merge_prob', 0.25)
+    _swap_prob = _ACFG.get('break_uniform_swap_prob', 0.15)
     paragraphs = text.split('\n\n')
     if len(paragraphs) < 3:
         return text
@@ -867,10 +917,10 @@ def _break_uniform_structure(text):
 
         # Occasionally merge two short adjacent paragraphs
         if (i + 1 < len(paragraphs) and
-                count_chinese(para) < 60 and
-                count_chinese(paragraphs[i + 1]) < 60 and
+                count_chinese(para) < _merge_cn and
+                count_chinese(paragraphs[i + 1]) < _merge_cn and
                 paragraphs[i + 1].strip() and
-                random.random() < 0.25):
+                random.random() < _merge_prob):
             merged = para.rstrip() + '\n' + paragraphs[i + 1].lstrip()
             result.append(merged)
             i += 2
@@ -879,7 +929,7 @@ def _break_uniform_structure(text):
         # Vary sentence structure within paragraph
         sentences = split_sentences(para)
         if len(sentences) >= 4:
-            if random.random() < 0.15 and len(sentences) >= 3:
+            if random.random() < _swap_prob and len(sentences) >= 3:
                 mid = len(sentences) // 2
                 sentences[mid], sentences[mid - 1] = sentences[mid - 1], sentences[mid]
 
@@ -891,14 +941,18 @@ def _break_uniform_structure(text):
 
 def _reduce_connectors(text, aggressive=False):
     """Reduce density of logical connectors."""
+    # ─── 从配置读取连接词消减参数 ───
+    _rc_max_n = _ACFG.get('reduce_connectors_max_normal', 6)
+    _rc_max_a = _ACFG.get('reduce_connectors_max_aggressive', 7)
+    _rc_prob = _ACFG.get('reduce_connectors_prob', 0.5)
     # Only remove some, not all — keep academic coherence
     removable = ['此外，', '另外，', '与此同时，', '不仅如此，', '事实上，', '实际上，']
     removed = 0
-    max_remove = 6 if not aggressive else 7
+    max_remove = _rc_max_n if not aggressive else _rc_max_a
 
     for conn in removable:
         while conn in text and removed < max_remove:
-            if random.random() < 0.5:
+            if random.random() < _rc_prob:
                 text = text.replace(conn, '', 1)
                 removed += 1
             else:
@@ -907,8 +961,11 @@ def _reduce_connectors(text, aggressive=False):
     return text
 
 
-def _shorten_long_sentences(text, max_chars=90):
+def _shorten_long_sentences(text, max_chars=None):
     """Split overly long academic sentences at natural breakpoints, with burstiness guard."""
+    # ─── 从配置读取长句阈值 ───
+    if max_chars is None:
+        max_chars = _ACFG.get('shorten_long_max_chars', 90)
     burst_before = _compute_burstiness(text)
 
     sentences = re.split(r'([。])', text)
@@ -995,7 +1052,8 @@ def _add_limitation_markers(text, aggressive=False):
     return text
 
 
-DEFAULT_BEST_OF_N = 10
+# ─── 从配置读取默认 best_of_n ───
+DEFAULT_BEST_OF_N = _ACFG.get('default_best_of_n', 10)
 
 
 def humanize_academic(text, aggressive=False, seed=None, best_of_n=DEFAULT_BEST_OF_N):
@@ -1068,14 +1126,20 @@ def humanize_academic(text, aggressive=False, seed=None, best_of_n=DEFAULT_BEST_
     # ACADEMIC_BLACKLIST_CANDIDATES (施用/本事/拉高 etc.) to keep the output readable
     # as an academic paper.
     if reduce_high_freq_bigrams:
-        bigram_strength = 0.5 if aggressive else 0.45
+        # ─── 从配置读取 bigram 强度 ───
+        _bigram_a = _ACFG.get('bigram_strength_aggressive', 0.5)
+        _bigram_n = _ACFG.get('bigram_strength', 0.45)
+        bigram_strength = _bigram_a if aggressive else _bigram_n
         text = reduce_high_freq_bigrams(text, strength=bigram_strength, scene='academic')
 
     # Strategy 2 & 3: Noise injection (skipped with --no-noise)
     if _USE_NOISE:
         # Strategy 3: Noise expression injection (academic style — restrained)
         if inject_noise_expressions:
-            noise_density = 0.2 if aggressive else 0.18
+            # ─── 从配置读取噪声密度 ───
+            _noise_a = _ACFG.get('noise_density_aggressive', 0.2)
+            _noise_n = _ACFG.get('noise_density', 0.18)
+            noise_density = _noise_a if aggressive else _noise_n
             text = inject_noise_expressions(text, density=noise_density, style='academic')
         
         # Strategy 2: Sentence length randomization
@@ -1103,9 +1167,11 @@ def humanize_academic(text, aggressive=False, seed=None, best_of_n=DEFAULT_BEST_
     # split_sentences which splits on [。！？\n] and the following ''.join() ate all
     # paragraph breaks, collapsing the 5-paragraph input into one blob.
     if _USE_STATS and ngram_analyze:
+        # ─── 从配置读取 ppl_repair 参数 ───
+        _ppl_range = _ACFG.get('ppl_repair_range', [0, 350])
         stats = ngram_analyze(text)
         ppl = stats.get('perplexity', 0)
-        if 0 < ppl < 350 and count_chinese(text) >= 100:
+        if _ppl_range[0] < ppl < _ppl_range[1] and count_chinese(text) >= 100:
             sorted_phrases = sorted(ACADEMIC_REPLACEMENTS.keys(), key=len, reverse=True)
 
             def _fix_paragraph(para, rng_seed):
@@ -1131,7 +1197,9 @@ def humanize_academic(text, aggressive=False, seed=None, best_of_n=DEFAULT_BEST_
                     return para
 
                 sent_scores.sort(key=lambda x: x[1])
-                n_fix = min(3, max(1, len(sent_scores) // 5))
+                # ─── 从配置读取每段修复句数 ───
+                _ppl_max_sents = _ACFG.get('ppl_repair_max_sentences', 3)
+                n_fix = min(_ppl_max_sents, max(1, len(sent_scores) // 5))
 
                 if rng_seed is not None:
                     random.seed(rng_seed)

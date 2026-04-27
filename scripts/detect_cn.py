@@ -13,6 +13,11 @@ import argparse
 from collections import defaultdict
 from math import log2
 
+# ─── 配置加载 ───
+from config_loader import load_config as _load_cfg
+_CFG = _load_cfg()
+_DCFG = _CFG.get('detect', {})
+
 # Import n-gram statistical model
 try:
     from ngram_model import analyze_text as ngram_analyze
@@ -127,9 +132,13 @@ def split_sentences(text):
 
 def char_entropy(text):
     """Calculate character-level entropy (proxy for perplexity)"""
+    # 从配置文件读取熵计算参数
+    entropy_min_chars = _DCFG.get('char_entropy_min_chars', 10)
+    entropy_default = _DCFG.get('char_entropy_default', 5.0)
+
     chars = re.findall(r'[\u4e00-\u9fff]', text)
-    if len(chars) < 10:
-        return 5.0  # Default
+    if len(chars) < entropy_min_chars:
+        return entropy_default  # Default
     
     # Bigram entropy
     bigrams = defaultdict(int)
@@ -226,7 +235,7 @@ def detect_patterns(text):
         c = text.count(phrase)
         if c > 0:
             hedge_count += c
-    threshold = CONFIG['medium_signal_patterns']['hedging_language'].get('threshold', 5) if CONFIG else 5
+    threshold = CONFIG['medium_signal_patterns']['hedging_language'].get('threshold', 5) if CONFIG else _DCFG.get('hedging_threshold', 5)
     if hedge_count >= threshold:
         issues['hedging_language'].append({
             'text': f'谨慎用语 {hedge_count} 次（阈值 {threshold}）',
@@ -248,75 +257,97 @@ def detect_patterns(text):
             })
     
     # ── Medium: Punctuation overuse ──
+    # 从配置文件读取标点阈值
+    dash_threshold = _DCFG.get('punctuation_dash_threshold', 1.0)
+    semicolon_threshold = _DCFG.get('punctuation_semicolon_threshold', 0.5)
+
     if char_count > 0:
         em_dash_count = text.count('—')
         semicolon_count = text.count('；')
         
-        if em_dash_count / char_count * 100 > 1.0:
+        if em_dash_count / char_count * 100 > dash_threshold:
             issues['punctuation_overuse'].append({
                 'text': f'破折号 {em_dash_count} 个',
                 'severity': 'medium',
             })
-        if semicolon_count / char_count * 100 > 0.5:
+        if semicolon_count / char_count * 100 > semicolon_threshold:
             issues['punctuation_overuse'].append({
                 'text': f'分号 {semicolon_count} 个',
                 'severity': 'medium',
             })
     
     # ── Medium: Parallel structures (excessive rhetoric) ──
+    # 从配置文件读取修辞阈值
+    rhetoric_threshold = _DCFG.get('rhetoric_threshold', 2)
     parallel_pattern = r'[，,][^，,。！？]{4,10}[；;，,][^，,。！？]{4,10}[。！？]'
     parallels = re.findall(parallel_pattern, text)
-    if len(parallels) > 2:
+    if len(parallels) > rhetoric_threshold:
         issues['excessive_rhetoric'].append({
             'text': f'对偶/排比 {len(parallels)} 处',
             'severity': 'medium',
         })
     
     # ── Style: Uniform paragraph lengths ──
+    # 从配置文件读取段落均匀性参数
+    uniform_cv = _DCFG.get('uniform_paragraphs_cv', 0.2)
+    uniform_min = _DCFG.get('uniform_paragraphs_min', 3)
+
     paragraphs = [p.strip() for p in text.split('\n\n') if p.strip() and len(p.strip()) > 20]
-    if len(paragraphs) >= 3:
+    if len(paragraphs) >= uniform_min:
         lengths = [len(p) for p in paragraphs]
         avg_len = sum(lengths) / len(lengths)
         if avg_len > 0:
             cv = (sum((l - avg_len) ** 2 for l in lengths) / len(lengths)) ** 0.5 / avg_len
-            if cv < 0.2:  # Coefficient of variation < 20%
+            if cv < uniform_cv:  # Coefficient of variation < 20%
                 issues['uniform_paragraphs'].append({
                     'text': f'段落长度 CV={cv:.2f}，过于均匀',
                     'severity': 'style',
                 })
     
     # ── Style: Low burstiness (sentence length uniformity) ──
-    if len(sentences) > 5:
+    # 从配置文件读取突发度参数
+    burst_min_sentences = _DCFG.get('low_burstiness_min_sentences', 5)
+    burst_cv = _DCFG.get('low_burstiness_cv', 0.25)
+
+    if len(sentences) > burst_min_sentences:
         sent_lens = [count_chinese_chars(s) for s in sentences]
-        avg_sl = sum(sent_lens) / len(sent_lens)
+        avg_sl = sum(sent_lens) / len(sentences)
         if avg_sl > 0:
             cv_sent = (sum((l - avg_sl) ** 2 for l in sent_lens) / len(sent_lens)) ** 0.5 / avg_sl
-            if cv_sent < 0.25:
+            if cv_sent < burst_cv:
                 issues['low_burstiness'].append({
                     'text': f'句子长度 CV={cv_sent:.2f}，缺少节奏变化',
                     'severity': 'style',
                 })
     
     # ── Style: Emotional flatness ──
+    # 从配置文件读取情感平坦度参数
+    emotional_min_chars = _DCFG.get('emotional_flatness_min_chars', 300)
+    emotional_density_thresh = _DCFG.get('emotional_flatness_density', 0.15)
+
     emotional_count = sum(text.count(w) for w in EMOTIONAL_WORDS)
     personal_count = sum(text.count(w) for w in PERSONAL_MARKERS)
-    if char_count > 300:
+    if char_count > emotional_min_chars:
         emotional_density = (emotional_count + personal_count) / char_count * 100
-        if emotional_density < 0.15:
+        if emotional_density < emotional_density_thresh:
             issues['emotional_flatness'].append({
                 'text': f'情感/个人表达密度 {emotional_density:.2f}%，偏低',
                 'severity': 'style',
             })
     
     # ── Style: Repetitive sentence starters ──
-    if len(sentences) > 5:
+    # 从配置文件读取句首重复参数
+    starters_min_sentences = _DCFG.get('repetitive_starters_min_sentences', 5)
+    starters_threshold = _DCFG.get('repetitive_starters_threshold', 3)
+
+    if len(sentences) > starters_min_sentences:
         starters = defaultdict(int)
         for s in sentences:
             s = s.strip()
             if len(s) >= 2:
                 starters[s[:2]] += 1
         max_repeat = max(starters.values()) if starters else 0
-        if max_repeat >= 3:
+        if max_repeat >= starters_threshold:
             top_starter = max(starters, key=starters.get)
             issues['repetitive_starters'].append({
                 'text': f'"{top_starter}..." 出现 {max_repeat} 次',
@@ -324,8 +355,12 @@ def detect_patterns(text):
             })
     
     # ── Style: Low entropy (predictable) ──
+    # 从配置文件读取低熵参数
+    low_entropy_min_chars = _DCFG.get('low_entropy_min_chars', 200)
+    low_entropy_thresh = _DCFG.get('low_entropy_threshold', 6.0)
+
     entropy = char_entropy(text)
-    if entropy < 6.0 and char_count > 200:
+    if entropy < low_entropy_thresh and char_count > low_entropy_min_chars:
         issues['low_entropy'].append({
             'text': f'字符熵 {entropy:.2f}（越低越可预测）',
             'severity': 'style',
@@ -333,7 +368,8 @@ def detect_patterns(text):
     
     # ── Statistical: N-gram perplexity features ──
     ngram_stats = None
-    if ngram_analyze and char_count >= 100:
+    ngram_min_chars = _DCFG.get('ngram_min_chars', 100)
+    if ngram_analyze and char_count >= ngram_min_chars:
         ngram_stats = ngram_analyze(text)
         indicators = ngram_stats.get('indicators', {})
         diveye = ngram_stats.get('diveye', {})
@@ -463,13 +499,14 @@ def detect_patterns(text):
 
 # ─── Scoring ───
 
-SEVERITY_WEIGHTS = {
+# 从配置文件读取严重度权重
+SEVERITY_WEIGHTS = _DCFG.get('severity_weights', {
     'critical': 8,
     'high': 4,
     'medium': 2,
     'style': 1.5,
     'statistical': 0,  # statistical features scored separately below
-}
+})
 
 # Statistical feature weights (scored independently, contribute 20-30% of final score).
 # Weights roughly proportional to Cohen's d on HC3-Chinese calibration:
@@ -501,6 +538,15 @@ def calculate_score(issues, metrics):
       - Rule-based patterns: ~70-80% weight
       - Statistical features (perplexity/burstiness/entropy): ~20-30% weight
     """
+    # 从配置文件读取分数上限
+    rule_cap = _DCFG.get('rule_score_cap', 60)
+    stat_cap = _DCFG.get('stat_score_cap', 40)
+    emotional_penalty_threshold = _DCFG.get('emotional_density_penalty_threshold', 0.1)
+    emotional_penalty_min_chars = _DCFG.get('emotional_density_penalty_min_chars', 500)
+    emotional_penalty_score = _DCFG.get('emotional_density_penalty_score', 5)
+    low_entropy_threshold = _DCFG.get('low_entropy_threshold', 5.5)
+    low_entropy_penalty_score = _DCFG.get('low_entropy_penalty_score', 5)
+
     raw = 0
     
     for category, items in issues.items():
@@ -517,7 +563,7 @@ def calculate_score(issues, metrics):
     # Rule-based score (cap contribution at 60 points — was 75, reduced so stat
     # has more headroom). HC3 measurement showed rule raw max = 33 for AI samples,
     # so 60 is still ample.
-    rule_score = min(60, int(raw * 1.0))
+    rule_score = min(rule_cap, int(raw * 1.0))
 
     # Statistical score (up to 40 points — was 25, raised after HC3 measurement
     # showed uncapped stat Cohen's d = 1.695 but cap=25 clipped 90% of AI samples,
@@ -526,26 +572,31 @@ def calculate_score(issues, metrics):
     for category, items in issues.items():
         if category.startswith('stat_') and items:
             stat_score += STATISTICAL_WEIGHTS.get(category, 5)
-    stat_score = min(40, stat_score)
+    stat_score = min(stat_cap, stat_score)
     
     score = rule_score + stat_score
     
     # Bonus penalties
-    if metrics.get('emotional_density', 1) < 0.1 and metrics['char_count'] > 500:
-        score = min(100, score + 5)
+    if metrics.get('emotional_density', 1) < emotional_penalty_threshold and metrics['char_count'] > emotional_penalty_min_chars:
+        score = min(100, score + emotional_penalty_score)
     
-    if metrics.get('entropy') and metrics['entropy'] < 5.5:
-        score = min(100, score + 5)
+    if metrics.get('entropy') and metrics['entropy'] < low_entropy_threshold:
+        score = min(100, score + low_entropy_penalty_score)
     
     return min(100, score)
 
 def score_to_level(score):
     """Convert numeric score to level"""
-    if score >= 75:
+    # 从配置文件读取分数等级阈值
+    levels = _DCFG.get('score_levels', {})
+    very_high = levels.get('very_high', 75)
+    high = levels.get('high', 50)
+    medium = levels.get('medium', 25)
+    if score >= very_high:
         return 'very_high'
-    elif score >= 50:
+    elif score >= high:
         return 'high'
-    elif score >= 25:
+    elif score >= medium:
         return 'medium'
     else:
         return 'low'
@@ -554,6 +605,11 @@ def score_to_level(score):
 
 def analyze_sentences(text, top_n=5):
     """Find the most AI-like sentences"""
+    # 从配置文件读取分析参数
+    phrase_score = _DCFG.get('analyze_phrase_score', 3)
+    template_score = _DCFG.get('analyze_template_score', 5)
+    default_top_n = _DCFG.get('analyze_default_top_n', 5)
+
     sentences = split_sentences(text)
     scored = []
     
@@ -573,13 +629,13 @@ def analyze_sentences(text, top_n=5):
         # Check phrases
         for phrase in all_bad_phrases:
             if phrase in sent:
-                s += 3
+                s += phrase_score
                 reasons.append(phrase)
         
         # Check regex
         for pattern in all_bad_regex:
             if re.search(pattern, sent):
-                s += 5
+                s += template_score
                 reasons.append(f'模板: {pattern[:20]}')
         
         if s > 0:
@@ -628,6 +684,11 @@ CATEGORY_NAMES = {
 }
 
 def format_output(issues, metrics, score, sentences=None, as_json=False, score_only=False, verbose=False):
+    # 从配置文件读取格式化参数
+    bar_len = _DCFG.get('format_bar_length', 20)
+    default_display = _DCFG.get('format_default_display', 3)
+    verbose_display = _DCFG.get('format_verbose_display', 5)
+
     total_issues = sum(len(v) for v in issues.values())
     level = score_to_level(score)
     
@@ -655,7 +716,6 @@ def format_output(issues, metrics, score, sentences=None, as_json=False, score_o
     lines = []
     
     # Score bar
-    bar_len = 20
     filled = int(score / 100 * bar_len)
     bar = '█' * filled + '░' * (bar_len - filled)
     lines.append(f'AI 评分: {score}/100 [{bar}] {level.upper().replace("_", " ")}')
@@ -685,7 +745,7 @@ def format_output(issues, metrics, score, sentences=None, as_json=False, score_o
         icon, name = CATEGORY_NAMES.get(cat, ('⚪', cat))
         items = issues[cat]
         lines.append(f'{icon} {name} ({len(items)})')
-        show_count = 5 if verbose else 3
+        show_count = verbose_display if verbose else default_display
         for item in items[:show_count]:
             count_str = f' ×{item["count"]}' if item.get('count', 1) > 1 else ''
             lines.append(f'   {item["text"]}{count_str}')
@@ -711,7 +771,7 @@ def main():
     parser.add_argument('-j', '--json', action='store_true', help='JSON 输出')
     parser.add_argument('-s', '--score', action='store_true', help='仅输出分数')
     parser.add_argument('-v', '--verbose', action='store_true', help='详细模式（含逐句分析）')
-    parser.add_argument('--sentences', type=int, default=5, help='显示最可疑的 N 个句子')
+    parser.add_argument('--sentences', type=int, default=_DCFG.get('main_default_sentences', 5), help='显示最可疑的 N 个句子')
     parser.add_argument('--lr', action='store_true',
                         help='仅 LR ensemble 打分（诊断用）')
     parser.add_argument('--rule-only', action='store_true',
@@ -749,14 +809,26 @@ def main():
         from scripts.ngram_model import compute_lr_score
     lr_result = None if args.rule_only else compute_lr_score(text, scene=args.scene)
 
+    # 短文本专用评分：从配置文件读取阈值
+    short_text_threshold = _DCFG.get('short_text_threshold', 100)
+    fuse_rule_weight = _DCFG.get('fuse_rule_weight', 0.2)
+    fuse_lr_weight = _DCFG.get('fuse_lr_weight', 0.8)
+
+    char_count = metrics.get('char_count', 0)
+    is_short_text = char_count < short_text_threshold
+
     if args.rule_only or lr_result is None:
         score = rule_score
+    elif is_short_text:
+        # 短文本：纯规则评分，LR 不可靠
+        score = rule_score
+        metrics['_short_text_mode'] = True
     else:
         metrics['_lr'] = lr_result
         if args.lr:
             score = lr_result['score']
         else:  # default: fused
-            score = round(0.2 * rule_score + 0.8 * lr_result['score'])
+            score = round(fuse_rule_weight * rule_score + fuse_lr_weight * lr_result['score'])
             metrics['_fused'] = {'rule_stat': rule_score, 'lr': lr_result['score']}
     
     # Sentence analysis (verbose mode)
