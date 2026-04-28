@@ -809,27 +809,75 @@ def main():
         from scripts.ngram_model import compute_lr_score
     lr_result = None if args.rule_only else compute_lr_score(text, scene=args.scene)
 
+    # BERT 检测器（用户训练的 ONNX 模型）
+    bert_result = None
+    try:
+        from bert_detector import get_bert_score
+        bert_result = get_bert_score(text)
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
     # 短文本专用评分：从配置文件读取阈值
     short_text_threshold = _DCFG.get('short_text_threshold', 100)
     fuse_rule_weight = _DCFG.get('fuse_rule_weight', 0.2)
     fuse_lr_weight = _DCFG.get('fuse_lr_weight', 0.8)
+    fuse_bert_weight = _DCFG.get('fuse_bert_weight', 0.0)  # BERT 权重，默认 0（向后兼容）
+
+    # 如果 BERT 可用且配置了权重，自动调整 rule/LR 权重
+    if bert_result is not None and fuse_bert_weight > 0:
+        remaining = 1.0 - fuse_bert_weight
+        # 按 rule:lr 原比例分配剩余权重
+        total_original = fuse_rule_weight + fuse_lr_weight
+        if total_original > 0:
+            fuse_rule_weight = round(fuse_rule_weight / total_original * remaining, 3)
+            fuse_lr_weight = round(fuse_lr_weight / total_original * remaining, 3)
 
     char_count = metrics.get('char_count', 0)
     is_short_text = char_count < short_text_threshold
 
-    if args.rule_only or lr_result is None:
+    if args.rule_only or (lr_result is None and bert_result is None):
         score = rule_score
     elif is_short_text:
-        # 短文本：纯规则评分，LR 不可靠
-        score = rule_score
+        # 短文本：跳过 LR（统计特征不够），但保留规则 + BERT
+        parts = {'rule': rule_score}
+        weights = {'rule': 0.4}
+
+        if bert_result is not None:
+            parts['bert'] = bert_result['score']
+            weights['bert'] = 0.6
+            metrics['_bert'] = bert_result
+
+        score = round(sum(weights[k] * parts[k] for k in parts), 1)
         metrics['_short_text_mode'] = True
+        metrics['_fused'] = {
+            'weights': weights,
+            'scores': parts,
+            'note': 'short_text: LR skipped, rule+BERT only'
+        }
+    elif args.lr:
+        score = lr_result['score']
     else:
-        metrics['_lr'] = lr_result
-        if args.lr:
-            score = lr_result['score']
-        else:  # default: fused
-            score = round(fuse_rule_weight * rule_score + fuse_lr_weight * lr_result['score'])
-            metrics['_fused'] = {'rule_stat': rule_score, 'lr': lr_result['score']}
+        # 融合评分：rule + LR + BERT（三路或双路）
+        parts = {'rule': rule_score}
+        weights = {'rule': fuse_rule_weight}
+
+        if lr_result is not None:
+            parts['lr'] = lr_result['score']
+            weights['lr'] = fuse_lr_weight
+            metrics['_lr'] = lr_result
+
+        if bert_result is not None:
+            parts['bert'] = bert_result['score']
+            weights['bert'] = fuse_bert_weight
+            metrics['_bert'] = bert_result
+
+        score = round(sum(weights[k] * parts[k] for k in parts), 1)
+        metrics['_fused'] = {
+            'weights': weights,
+            'scores': parts,
+        }
     
     # Sentence analysis (verbose mode)
     worst_sentences = None

@@ -1,0 +1,12 @@
+{
+  "model_name": "bert-base-chinese",
+  "trained_at": "2026-04-28T18:07:54.580914",
+  "epochs": 3,
+  "batch_size": 16,
+  "max_length": 128,
+  "learning_rate": 2e-05,
+  "train_samples": 80,
+  "test_samples": 20,
+  "train_loss": 0.540166727701823,
+  "seed": 42
+}

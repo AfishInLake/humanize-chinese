@@ -5,12 +5,22 @@
 在改写后检查原文与改写文的 embedding 余弦相似度，
 低于阈值则回退原文，防止改写改变原意。
 
-ONNX 模型需另机训练后导出（见 refactoring-plan.md 第 6-7 节）。
+使用 bert-base-chinese 预训练模型导出的 ONNX（与句式评分器共用同一模型）。
 模型不可用时自动降级为跳过检查。
+
+所需文件（放到 scripts/ 目录）：
+  - bert_base_chinese.onnx       （ONNX 模型）
+  - bert_base_chinese/            （tokenizer 目录）
+    ├── vocab.txt
+    ├── tokenizer_config.json
+    └── ...
 """
 
 import os
 import numpy as np
+import logging
+
+logger = logging.getLogger(__name__)
 
 # ─── 配置加载 ───
 from config_loader import load_config as _load_cfg
@@ -18,68 +28,123 @@ _CFG = _load_cfg()
 _SGCFG = _CFG.get('semantic_guard', {})
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-# ─── 从配置读取 ONNX 模型路径 ───
+
+# ─── 模型路径 ───
 _onnx_model_name = _SGCFG.get('onnx_model_path', 'bert_base_chinese.onnx')
 _ONNX_MODEL_PATH = os.path.join(SCRIPT_DIR, _onnx_model_name)
+_tokenizer_dir = os.path.join(SCRIPT_DIR, 'bert_base_chinese')
+
 _ONNX_SESSION = None
 _ONNX_AVAILABLE = None
+_tokenizer = None
 
 
 def _init_onnx():
-    """延迟初始化 ONNX Runtime 会话。"""
-    global _ONNX_SESSION, _ONNX_AVAILABLE
+    """延迟初始化 ONNX Runtime 会话 + Tokenizer。"""
+    global _ONNX_SESSION, _ONNX_AVAILABLE, _tokenizer
+
     if _ONNX_AVAILABLE is not None:
         return _ONNX_AVAILABLE
 
     if not os.path.exists(_ONNX_MODEL_PATH):
+        logger.info("语义保镖 ONNX 模型不存在: %s，将跳过语义检查", _ONNX_MODEL_PATH)
         _ONNX_AVAILABLE = False
         return False
 
     try:
         import onnxruntime as ort
+        from transformers import AutoTokenizer
+
+        # 加载 tokenizer
+        try:
+            _tokenizer = AutoTokenizer.from_pretrained(_tokenizer_dir, local_files_only=True)
+        except Exception:
+            _tokenizer = AutoTokenizer.from_pretrained('bert-base-chinese')
+
+        # 加载 ONNX 模型
         sess_options = ort.SessionOptions()
         sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         _ONNX_SESSION = ort.InferenceSession(_ONNX_MODEL_PATH, sess_options)
+
         _ONNX_AVAILABLE = True
-    except (ImportError, Exception):
+        logger.info("语义保镖加载成功: %s", _ONNX_MODEL_PATH)
+
+    except ImportError:
         _ONNX_AVAILABLE = False
+        logger.info("onnxruntime/transformers 未安装，语义保镖不可用")
+    except Exception as e:
+        _ONNX_AVAILABLE = False
+        logger.warning("语义保镖加载失败: %s", e)
 
     return _ONNX_AVAILABLE
 
 
-def _get_embeddings(texts):
-    """从 ONNX 模型获取文本 embedding（[CLS] 向量）。"""
-    if _ONNX_SESSION is None:
+def _get_embeddings(text):
+    """从 ONNX 模型获取文本 embedding（[CLS] 向量）。
+
+    Args:
+        text: 单段文本
+
+    Returns:
+        numpy array (768,) 或 None
+    """
+    if not _init_onnx():
         return None
 
     try:
-        import onnxruntime as ort
-        # 简单的字符级 tokenization（实际应使用与训练一致的 tokenizer）
-        # 这里是占位实现，实际部署时需要加载 tokenizer
-        # TODO: 加载 BertTokenizer 并转换为 ONNX 输入格式
-        # ─── 从配置读取最大 token 长度 ───
-        _max_tok = _SGCFG.get('max_token_length', 512)
-        input_ids = np.array([[ord(c) % 21128 for c in texts[0][:_max_tok]]], dtype=np.int64)
-        attention_mask = np.ones_like(input_ids)
+        max_len = _SGCFG.get('max_token_length', 512)
 
-        outputs = _ONNX_SESSION.run(
-            None,
-            {
-                'input_ids': input_ids,
-                'attention_mask': attention_mask,
-            },
+        # Tokenize
+        encoded = _tokenizer(
+            text,
+            max_length=max_len,
+            truncation=True,
+            padding='max_length',
+            return_tensors='np'
         )
 
-        # 取 [CLS] token 的最后一层隐藏状态作为句子 embedding
-        # ONNX 输出格式取决于导出时的设置
-        if isinstance(outputs, tuple) and len(outputs) >= 2:
-            hidden_states = outputs[0]  # (1, seq_len, 768)
-            cls_embedding = hidden_states[0, 0]  # (768,)
+        input_ids = encoded['input_ids'].astype(np.int64)
+        attention_mask = encoded['attention_mask'].astype(np.int64)
+
+        # 构造 ONNX 输入
+        input_names = {inp.name for inp in _ONNX_SESSION.get_inputs()}
+        feeds = {'input_ids': input_ids, 'attention_mask': attention_mask}
+        if 'token_type_ids' in input_names:
+            feeds['token_type_ids'] = np.zeros_like(input_ids)
+
+        outputs = _ONNX_SESSION.run(None, feeds)
+
+        # 解析输出：取 [CLS] token 的最后一层隐藏状态
+        # BertModel 导出时，输出是 hidden_states (1, seq_len, 768)
+        # BertForMaskedLM 导出时，输出是 logits (1, seq_len, vocab_size)
+        # 需要区分两种情况
+
+        if isinstance(outputs, (tuple, list)):
+            # 多输出：hidden_states 通常是第一个
+            first_output = outputs[0]
         else:
-            cls_embedding = outputs[0][0, 0]
+            first_output = outputs
+
+        # 判断是 hidden_states 还是 logits
+        # hidden_states: shape (1, seq_len, 768)
+        # logits: shape (1, seq_len, 21128)
+        if len(first_output.shape) == 3:
+            if first_output.shape[-1] == 768:
+                # hidden_states — 直接取 [CLS]
+                cls_embedding = first_output[0, 0]  # (768,)
+            elif first_output.shape[-1] > 1000:
+                # logits（MLM 模型）— 无法取 embedding，降级
+                logger.debug("语义保镖: 模型输出是 logits 而非 hidden_states，无法提取 embedding")
+                return None
+            else:
+                cls_embedding = first_output[0, 0]
+        else:
+            return None
 
         return cls_embedding
-    except Exception:
+
+    except Exception as e:
+        logger.debug("语义保镖 embedding 提取异常: %s", e)
         return None
 
 
@@ -105,15 +170,13 @@ def check_semantic_preservation(original, rewritten, threshold=None):
         - is_preserved: bool，True 表示语义保持良好
         - similarity_score: float，余弦相似度分数
     """
-    # ─── 从配置读取相似度阈值 ───
     if threshold is None:
         threshold = _SGCFG.get('similarity_threshold', 0.85)
     if not _init_onnx():
-        # ONNX 不可用，跳过检查（默认通过）
         return True, 1.0
 
-    emb_orig = _get_embeddings([original])
-    emb_rew = _get_embeddings([rewritten])
+    emb_orig = _get_embeddings(original)
+    emb_rew = _get_embeddings(rewritten)
 
     if emb_orig is None or emb_rew is None:
         return True, 1.0
@@ -133,7 +196,6 @@ def safe_rewrite(original, rewritten, threshold=None):
     Returns:
         改写后的文本（如果语义保持）或原文（如果语义偏移过大）
     """
-    # ─── 从配置读取相似度阈值 ───
     if threshold is None:
         threshold = _SGCFG.get('similarity_threshold', 0.85)
     is_preserved, sim = check_semantic_preservation(original, rewritten, threshold)

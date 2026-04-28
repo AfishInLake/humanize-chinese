@@ -57,13 +57,13 @@ def _init_bert():
 
     try:
         import onnxruntime as ort
-        from transformers import BertTokenizer
+        from transformers import AutoTokenizer
 
         # 优先从本地加载 tokenizer（离线环境），失败再从 HuggingFace 加载
         try:
-            _bert_tokenizer = BertTokenizer.from_pretrained(tokenizer_local_path, local_files_only=True)
+            _bert_tokenizer = AutoTokenizer.from_pretrained(tokenizer_local_path, local_files_only=True)
         except Exception:
-            _bert_tokenizer = BertTokenizer.from_pretrained(model_name)
+            _bert_tokenizer = AutoTokenizer.from_pretrained(model_name)
 
         if not os.path.exists(onnx_path):
             logger.info("ONNX 模型文件不存在: %s，BERT 评分不可用，将降级为 perplexity", onnx_path)

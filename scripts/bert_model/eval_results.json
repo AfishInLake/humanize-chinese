@@ -1,0 +1,25 @@
+{
+  "eval_results": {
+    "eval_loss": 0.47459715604782104,
+    "eval_accuracy": 0.9,
+    "eval_precision": 0.9,
+    "eval_recall": 0.9,
+    "eval_f1": 0.9,
+    "eval_auc": 0.91,
+    "eval_runtime": 0.2651,
+    "eval_samples_per_second": 75.453,
+    "eval_steps_per_second": 7.545,
+    "epoch": 3.0
+  },
+  "classification_report": "              precision    recall  f1-score   support\n\n       Human     0.9000    0.9000    0.9000        10\n          AI     0.9000    0.9000    0.9000        10\n\n    accuracy                         0.9000        20\n   macro avg     0.9000    0.9000    0.9000        20\nweighted avg     0.9000    0.9000    0.9000        20\n",
+  "confusion_matrix": [
+    [
+      9,
+      1
+    ],
+    [
+      1,
+      9
+    ]
+  ]
+}

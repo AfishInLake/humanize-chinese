@@ -62,6 +62,10 @@ def load_model(model_dir):
     if is_mlm:
         model = BertForMaskedLM.from_pretrained(model_dir)
         print(f"[加载] 检测到 MLM 模型（用于句式评分）")
+    elif any("BertModel" in a and "For" not in a for a in arch):
+        from transformers import BertModel
+        model = BertModel.from_pretrained(model_dir)
+        print(f"[加载] 检测到 BertModel（用于语义 embedding）")
     else:
         model = BertForSequenceClassification.from_pretrained(model_dir)
         print(f"[加载] 检测到 SequenceClassification 模型（用于检测）")
@@ -72,7 +76,10 @@ def load_model(model_dir):
     total_params = sum(p.numel() for p in model.parameters())
     print(f"[加载] 模型加载完成")
     print(f"[加载] 参数量: {total_params:,}")
-    print(f"[加载] 标签映射: {model.config.id2label}")
+    if hasattr(model.config, 'id2label') and model.config.id2label:
+        print(f"[加载] 标签映射: {model.config.id2label}")
+    else:
+        print(f"[加载] 模型类型: {type(model).__name__}（无标签映射）")
 
     return model, tokenizer
 

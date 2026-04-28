@@ -152,6 +152,7 @@ DEFAULTS = {
         "short_text_threshold": 100,
         "fuse_rule_weight": 0.2,
         "fuse_lr_weight": 0.8,
+        "fuse_bert_weight": 0.5,  # BERT 检测器权重（0=不用BERT，0.5=推荐值）
         "severity_weights": {
             "critical": 8,
             "high": 4,
@@ -348,6 +349,18 @@ DEFAULTS = {
         "onnx_model_path": "bert_base_chinese.onnx",
         "similarity_threshold": 0.85,
         "max_token_length": 512
+    },
+
+    # ─── bert_detector.py BERT AI 检测器参数 ───
+    "bert_detector": {
+        "enabled": True,
+        "model_dir": "bert_model_anx",
+        "onnx_model_path": "model.onnx",
+        "hf_model_name": "bert-base-chinese",
+        "max_length": 128,
+        "temperature": 0.8165,
+        "ai_label_id": 1,
+        "human_label_id": 0
     }
 }
 
