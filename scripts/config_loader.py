@@ -139,7 +139,12 @@ DEFAULTS = {
         "diversify_split_min_half_cn": 4,
         "dialogue_density_threshold": 0.08,
         "sentence_stats_min_cn": 3,
-        "sentence_stats_min_sentences": 3
+        "sentence_stats_min_sentences": 3,
+        # ─── BERT 句式评分参数 ───
+        "bert_restructure_enabled": True,
+        "bert_restructure_model": "bert-base-chinese",
+        "bert_restructure_fallback": "perplexity",
+        "bert_restructure_cache_size": 200
     },
 
     # ─── detect_cn.py 检测参数 ───

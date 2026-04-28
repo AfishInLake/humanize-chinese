@@ -31,33 +31,40 @@ import torch
 def load_model(model_dir):
     """从 HuggingFace 目录加载 BERT 模型。
 
+    自动检测模型类型（MLM / SequenceClassification）。
+
     Args:
         model_dir: HuggingFace 模型目录路径
 
     Returns:
         (model, tokenizer) 元组
     """
-    from transformers import BertForSequenceClassification, BertTokenizer
+    from transformers import BertTokenizer, BertForMaskedLM, BertForSequenceClassification
+    import json
 
     print(f"[加载] 从 {model_dir} 加载模型...")
     if not os.path.isdir(model_dir):
         print(f"错误: 模型目录不存在: {model_dir}")
         sys.exit(1)
 
-    # 检查必要文件
-    required_files = ["config.json", "model.safetensors"]
-    optional_files = ["pytorch_model.bin"]
-    has_required = all(os.path.exists(os.path.join(model_dir, f)) for f in required_files)
-    has_optional = any(os.path.exists(os.path.join(model_dir, f)) for f in optional_files)
-
-    if not has_required and not has_optional:
-        print(f"错误: 在 {model_dir} 中未找到模型权重文件")
-        print(f"  需要: {required_files} 或 {optional_files}")
-        sys.exit(1)
+    # 检查 config.json 判断模型类型
+    config_path = os.path.join(model_dir, "config.json")
+    if os.path.exists(config_path):
+        with open(config_path, "r") as f:
+            config = json.load(f)
+        arch = config.get("architectures", [])
+        is_mlm = any("ForMaskedLM" in a for a in arch)
+    else:
+        is_mlm = False
 
     # 加载模型和 tokenizer
-    model = BertForSequenceClassification.from_pretrained(model_dir)
     tokenizer = BertTokenizer.from_pretrained(model_dir)
+    if is_mlm:
+        model = BertForMaskedLM.from_pretrained(model_dir)
+        print(f"[加载] 检测到 MLM 模型（用于句式评分）")
+    else:
+        model = BertForSequenceClassification.from_pretrained(model_dir)
+        print(f"[加载] 检测到 SequenceClassification 模型（用于检测）")
 
     model.eval()
 
@@ -94,7 +101,7 @@ def export_to_onnx(model, output_path, max_length=512, opset_version=14):
     dynamic_axes = {
         "input_ids": {0: "batch_size", 1: "seq_length"},
         "attention_mask": {0: "batch_size", 1: "seq_length"},
-        "output": {0: "batch_size"},
+        "output": {0: "batch_size", 1: "seq_length"},
     }
 
     # 确保输出目录存在
@@ -399,15 +406,21 @@ def main():
     if not args.skip_verify:
         verify_onnx_runtime(onnx_path, tokenizer, args.max_length)
 
-    # ─── 步骤 5: 打印大小信息 ───
+    # ─── 步骤 5: 保存 tokenizer 到本地 ───
+    tokenizer_save_dir = os.path.join(os.path.dirname(onnx_path), 'bert_base_chinese')
+    tokenizer.save_pretrained(tokenizer_save_dir)
+    print(f"[Tokenizer] 已保存到: {tokenizer_save_dir}")
+
+    # ─── 步骤 6: 打印大小信息 ───
     final_size = os.path.getsize(onnx_path)
     print(f"\n{'='*60}")
     print("导出完成!")
     print(f"{'='*60}")
     print(f"  ONNX 模型路径: {onnx_path}")
     print(f"  模型大小:      {final_size / 1e6:.2f} MB")
-    print(f"\n  下一步: 将 {onnx_path} 复制到")
-    print(f"         humanize-chinese/scripts/ 目录即可使用。")
+    print(f"  Tokenizer路径: {tokenizer_save_dir}")
+    print(f"\n  下一步: 将 {onnx_path} 和 {tokenizer_save_dir}/")
+    print(f"         复制到 humanize-chinese/scripts/ 目录即可使用。")
     print(f"{'='*60}")
 
 

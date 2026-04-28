@@ -10,11 +10,254 @@ Chinese Deep Restructuring Module v1.0
 
 import re
 import random
+import os
+import logging
+
+logger = logging.getLogger(__name__)
 
 # ─── 配置加载 ───
 from config_loader import load_config as _load_cfg
 _CFG = _load_cfg()
 _RCFG = _CFG.get('restructure', {})
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  0. BERT 自然度评分 — 为句式重组候选打分选最优（ONNX 推理）
+# ═══════════════════════════════════════════════════════════════════
+
+_bert_tokenizer = None
+_onnx_session = None
+_bert_available = None  # None=未检测, True/False=已检测
+_score_cache = {}  # LRU-like cache: sentence -> score
+
+
+def _init_bert():
+    """延迟加载 BERT MLM ONNX 模型 + BertTokenizer。
+
+    ONNX 模型由 export_onnx.py 从 bert-base-chinese 导出。
+    仅需 onnxruntime + transformers（tokenizer），不需要 torch。
+
+    Returns:
+        (tokenizer, onnx_session) 元组，或 (None, None)。
+    """
+    global _bert_tokenizer, _onnx_session, _bert_available
+    if _bert_available is not None:
+        return (_bert_tokenizer, _onnx_session) if _bert_available else (None, None)
+
+    enabled = _RCFG.get('bert_restructure_enabled', True)
+    if not enabled:
+        _bert_available = False
+        return None, None
+
+    model_name = _RCFG.get('bert_restructure_model', 'bert-base-chinese')
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    onnx_path = os.path.join(script_dir, 'bert_base_chinese_mlm.onnx')
+    # tokenizer 本地路径：与 ONNX 模型同目录
+    tokenizer_local_path = os.path.join(script_dir, 'bert_base_chinese')
+
+    try:
+        import onnxruntime as ort
+        from transformers import BertTokenizer
+
+        # 优先从本地加载 tokenizer（离线环境），失败再从 HuggingFace 加载
+        try:
+            _bert_tokenizer = BertTokenizer.from_pretrained(tokenizer_local_path, local_files_only=True)
+        except Exception:
+            _bert_tokenizer = BertTokenizer.from_pretrained(model_name)
+
+        if not os.path.exists(onnx_path):
+            logger.info("ONNX 模型文件不存在: %s，BERT 评分不可用，将降级为 perplexity", onnx_path)
+            _bert_available = False
+            return None, None
+
+        sess_options = ort.SessionOptions()
+        sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        _onnx_session = ort.InferenceSession(onnx_path, sess_options)
+        _bert_available = True
+        logger.info("BERT MLM ONNX 模型加载成功: %s", onnx_path)
+    except ImportError:
+        _bert_available = False
+        logger.info("onnxruntime/transformers 未安装，BERT 评分不可用，将降级为 perplexity")
+    except Exception as e:
+        _bert_available = False
+        logger.warning("BERT ONNX 模型加载失败: %s，将降级为 perplexity", e)
+
+    return (_bert_tokenizer, _onnx_session) if _bert_available else (None, None)
+
+
+def _softmax(logits):
+    """纯 numpy softmax，避免 import torch。"""
+    import numpy as np
+    e = np.exp(logits - np.max(logits))
+    return e / e.sum()
+
+
+def bert_naturalness_score(sentence):
+    """用 BERT MLM ONNX 计算句子的自然度分数。
+
+    原理：逐词遮蔽，计算原始词在 BERT 预测分布中的概率，
+    所有词的平均负对数概率即为"自然度分数"。
+    分数越低 → 句子越"自然"（BERT 认为越可能由人类写出）。
+
+    Args:
+        sentence: 待评分的中文句子
+
+    Returns:
+        float: 自然度分数（越低越好），失败返回 float('inf')
+    """
+    import numpy as np
+    global _score_cache
+
+    # 缓存命中
+    if sentence in _score_cache:
+        return _score_cache[sentence]
+
+    # 缓存大小限制
+    max_cache = _RCFG.get('bert_restructure_cache_size', 200)
+    if len(_score_cache) > max_cache:
+        keys = list(_score_cache.keys())
+        for k in keys[:len(keys) // 2]:
+            del _score_cache[k]
+
+    tokenizer, session = _init_bert()
+    if tokenizer is None or session is None:
+        return float('inf')
+
+    try:
+        tokens = tokenizer.tokenize(sentence)
+        if not tokens or len(tokens) < 2:
+            _score_cache[sentence] = float('inf')
+            return float('inf')
+
+        # 截断过长句子
+        max_len = tokenizer.model_max_length - 2  # 留 [CLS] [SEP]
+        if len(tokens) > max_len:
+            tokens = tokens[:max_len]
+
+        token_ids = tokenizer.convert_tokens_to_ids(tokens)
+        total_score = 0.0
+        count = 0
+
+        for i in range(len(token_ids)):
+            masked_ids = token_ids.copy()
+            masked_ids[i] = tokenizer.mask_token_id
+
+            # 构造 ONNX 输入
+            input_ids = np.array([masked_ids], dtype=np.int64)
+            attention_mask = np.ones_like(input_ids)
+
+            # 获取 ONNX 模型输入名
+            input_names = {inp.name for inp in session.get_inputs()}
+            feeds = {'input_ids': input_ids, 'attention_mask': attention_mask}
+            # 某些导出可能包含 token_type_ids
+            if 'token_type_ids' in input_names:
+                feeds['token_type_ids'] = np.zeros_like(input_ids)
+
+            outputs = session.run(None, feeds)
+
+            # ONNX 输出: 第一个输出是 logits (1, seq_len, vocab_size)
+            if isinstance(outputs, tuple) or isinstance(outputs, list):
+                logits = outputs[0][0, i]  # (vocab_size,)
+            else:
+                logits = outputs[0, i]
+
+            probs = _softmax(logits)
+            original_prob = probs[token_ids[i]]
+
+            if original_prob > 1e-10:
+                total_score += -np.log(original_prob)
+            else:
+                total_score += 23.0  # 上限
+            count += 1
+
+        score = total_score / count if count > 0 else float('inf')
+        _score_cache[sentence] = score
+        return score
+
+    except Exception as e:
+        logger.debug("BERT ONNX 评分异常: %s", e)
+        return float('inf')
+
+
+def _perplexity_naturalness_score(sentence):
+    """降级方案：用 ngram perplexity 作为自然度分数。
+
+    perplexity 越高 → 越出乎意料 → 越不像 AI → 取负值使"越低越好"与 BERT 一致。
+
+    Returns:
+        float: -perplexity（越低越好），失败返回 float('inf')
+    """
+    try:
+        from ngram_model import compute_perplexity
+    except ImportError:
+        from scripts.ngram_model import compute_perplexity
+
+    try:
+        result = compute_perplexity(sentence, window_size=0)
+        ppl = result.get('perplexity', 0)
+        return -ppl  # 取负：ppl 越高越好 → -ppl 越低越好
+    except Exception:
+        return float('inf')
+
+
+def pick_best_restructure(original_segment, match_obj, replacement_fns):
+    """从多个候选改写中选自然度最优的。
+
+    优先使用 BERT MLM 打分；BERT 不可用时降级为 perplexity；
+    都不可用时回退 random.choice。
+
+    Args:
+        original_segment: 原始句段（完整句子）
+        match_obj: re.Match 对象，用于还原上下文
+        replacement_fns: list[callable]，候选替换函数列表
+
+    Returns:
+        str: 选中的改写结果
+    """
+    if not replacement_fns or len(replacement_fns) <= 1:
+        return replacement_fns[0](match_obj) if replacement_fns else ''
+
+    # 尝试 BERT 评分
+    tokenizer, model = _init_bert()
+    use_bert = tokenizer is not None
+
+    # 构建候选句子
+    candidates = []
+    for fn in replacement_fns:
+        try:
+            new_segment = original_segment[:match_obj.start()] + fn(match_obj) + original_segment[match_obj.end():]
+            candidates.append(new_segment)
+        except Exception:
+            candidates.append(original_segment)  # 出错保留原文
+
+    # 如果所有候选都一样（某些模板只有一个替换），直接返回
+    unique_candidates = list(set(candidates))
+    if len(unique_candidates) <= 1:
+        return replacement_fns[0](match_obj)
+
+    # 评分
+    fallback = _RCFG.get('bert_restructure_fallback', 'perplexity')
+    score_fn = bert_naturalness_score if use_bert else (
+        _perplexity_naturalness_score if fallback == 'perplexity' else None
+    )
+
+    if score_fn is not None:
+        scored = []
+        for i, cand in enumerate(candidates):
+            s = score_fn(cand)
+            scored.append((s, i, cand))
+
+        scored.sort(key=lambda x: x[0])  # 分数越低越好
+
+        # 选最优，但如果最优和原文一样（说明所有改写都不如原文），回退随机
+        best_score, best_idx, best_cand = scored[0]
+        original_score = score_fn(original_segment)
+
+        if best_cand != original_segment and best_score < original_score:
+            return replacement_fns[best_idx](match_obj)
+
+    # 最终降级：随机选
+    return random.choice(replacement_fns)(match_obj)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -553,9 +796,10 @@ def restructure_sentences(text, strength=None):
             for pattern, replacements in _SENTENCE_TEMPLATES:
                 m = pattern.search(segment)
                 if m:
-                    repl_fn = random.choice(replacements)
+                    # 用 BERT 自然度评分选最优候选（降级为 perplexity / random）
+                    repl_result = pick_best_restructure(segment, m, replacements)
                     try:
-                        new_segment = segment[:m.start()] + repl_fn(m) + segment[m.end():]
+                        new_segment = segment[:m.start()] + repl_result + segment[m.end():]
                         new_cn_len = len(re.findall(r'[\u4e00-\u9fff]', new_segment))
                         # 校验：改写后长度不应偏差太大，且不为空
                         if (len(new_segment.strip()) >= 4 and 
