@@ -1,14 +1,44 @@
 [project]
-name = "humanize-chinese"
+name = "humanize-cn"
 version = "0.1.0"
-description = "Add your description here"
+description = "中文 AI 文本去痕迹工具 — 免费、本地运行、零 LLM 依赖"
 readme = "README.md"
 requires-python = ">=3.12"
+license = {text = "MIT Non-Commercial"}
+
 dependencies = [
-    "onnx>=1.21.0",
-    "onnxruntime>=1.25.1",
-    "pandas>=3.0.2",
-    "scikit-learn>=1.8.0",
-    "torch>=2.11.0",
-    "transformers>=5.6.2",
+    "jieba>=0.42.1",
 ]
+
+[project.optional-dependencies]
+bert = [
+    "onnxruntime>=1.16.0",
+    "transformers>=4.30.0",
+    "numpy>=1.24.0",
+]
+train = [
+    "torch>=2.0.0",
+    "transformers>=4.30.0",
+    "onnx>=1.14.0",
+    "onnxruntime>=1.16.0",
+    "scikit-learn>=1.3.0",
+    "pandas>=2.0.0",
+    "numpy>=1.24.0",
+]
+dev = [
+    "humanize-cn[bert,train]",
+]
+
+[project.scripts]
+humanize = "humanize_cn.interfaces.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/humanize_cn"]
+include = ["src/humanize_cn/data/*.json"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/humanize_cn", "scripts"]
