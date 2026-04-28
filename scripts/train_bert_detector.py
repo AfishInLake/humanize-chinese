@@ -392,22 +392,17 @@ def compute_metrics(eval_pred):
     }
 
 
-class EarlyStoppingCallback:
-    """早停回调：当 eval loss 连续 patience 轮未改善时停止训练。"""
+from transformers import TrainerCallback, AutoTokenizer, AutoModelForSequenceClassification
 
+
+class EarlyStoppingCallback(TrainerCallback):
     def __init__(self, patience=2, threshold=1e-4):
-        """
-        Args:
-            patience:   允许的最大未改善轮数
-            threshold:  改善的最小阈值
-        """
         self.patience = patience
         self.threshold = threshold
         self.best_loss = None
         self.counter = 0
 
     def on_evaluate(self, args, state, control, metrics=None, **kwargs):
-        """在每次评估后调用。"""
         current_loss = metrics.get("eval_loss") if metrics else None
         if current_loss is None:
             return
@@ -416,7 +411,6 @@ class EarlyStoppingCallback:
             self.best_loss = current_loss
             return
 
-        # 检查是否有改善
         if current_loss < self.best_loss - self.threshold:
             self.best_loss = current_loss
             self.counter = 0
@@ -426,7 +420,6 @@ class EarlyStoppingCallback:
             if self.counter >= self.patience:
                 print(f"[早停] 连续 {self.patience} 轮未改善，停止训练")
                 control.should_training_stop = True
-
 
 def train_model(
     data_dir,
@@ -475,7 +468,12 @@ def train_model(
         torch.cuda.manual_seed_all(seed)
 
     # ─── 设备信息 ───
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    if torch.cuda.is_available():
+        device = "cuda"
+    elif torch.backends.mps.is_available():
+        device = "mps"
+    else:
+        device = "cpu"
     print(f"[设备] 使用 {device}")
     if torch.cuda.is_available():
         print(f"[设备] GPU: {torch.cuda.get_device_name(0)}")
@@ -523,12 +521,13 @@ def train_model(
     model_name = "bert-base-chinese"
     print(f"[模型] 加载预训练模型: {model_name}")
 
-    tokenizer = BertTokenizer.from_pretrained(model_name)
-    model = BertForSequenceClassification.from_pretrained(
+
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForSequenceClassification.from_pretrained(
         model_name,
         num_labels=2,
-        id2label={0: "Human", 1: "AI"},
         label2id={"Human": 0, "AI": 1},
+        id2label={0: "Human", 1: "AI"},
     )
 
     # 打印模型参数量
@@ -569,8 +568,8 @@ def train_model(
         greater_is_better=False,
         save_total_limit=2,
         # 性能优化
-        fp16=torch.cuda.is_available(),
-        dataloader_num_workers=4 if torch.cuda.is_available() else 0,
+        fp16=torch.cuda.is_available() or (device == "mps"),
+        dataloader_num_workers=4 if (device == "cuda" or device == "mps") else 0,
         dataloader_pin_memory=torch.cuda.is_available(),
         # 避免警告
         report_to="none",
@@ -860,7 +859,7 @@ def parse_args():
     parser.add_argument(
         "--max_length",
         type=int,
-        default=512,
+        default=128,
         help="最大序列长度 (默认: 512)",
     )
     parser.add_argument(

@@ -1,0 +1,14 @@
+[project]
+name = "humanize-chinese"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "onnx>=1.21.0",
+    "onnxruntime>=1.25.1",
+    "pandas>=3.0.2",
+    "scikit-learn>=1.8.0",
+    "torch>=2.11.0",
+    "transformers>=5.6.2",
+]
