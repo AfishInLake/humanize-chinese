@@ -1,7 +1,7 @@
 [project]
 name = "humanize-cn"
 version = "0.1.0"
-description = "中文 AI 文本去痕迹工具 — 免费、本地运行、零 LLM 依赖"
+description = "中文 AI 文本去痕迹工具 — 免费、本地运行、可选 LLM 增强"
 readme = "README.md"
 requires-python = ">=3.12"
 license = {text = "MIT Non-Commercial"}
@@ -15,6 +15,9 @@ bert = [
     "onnxruntime>=1.16.0",
     "transformers>=4.30.0",
     "numpy>=1.24.0",
+]
+llm = [
+    "httpx>=0.24.0",
 ]
 train = [
     "torch>=2.0.0",

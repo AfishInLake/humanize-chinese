@@ -27,4 +27,6 @@ evals/compression_human_seed.txt
 **/*.pt
 **/*.bin
 **/*.safetensors
+.env
+.venv
 

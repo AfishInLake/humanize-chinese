@@ -448,7 +448,7 @@ def _build_templates():
         re.compile(r'(?P<X>[^，,。]{2,15})有助于(?P<Y>[^，,。]{2,20})的(?:实现|提升|改善|促进|推动)'),
         [
             lambda m: f'{m.group("X")}有利于{m.group("Y")}',
-            lambda m: f'{m.group("X")}对{m.group("Y")}的达成有所促进',
+            lambda m: f'{m.group("X")}能够推动{m.group("Y")}',
         ]
     ))
 
@@ -456,8 +456,8 @@ def _build_templates():
     templates.append((
         re.compile(r'(?P<X>[^，,。]{2,15})成为(?P<Y>[^，,。]{2,12})的(?:重要|关键|主要)(?P<Z>手段|方式|途径|方法|工具)'),
         [
-            lambda m: f'{m.group("X")}是{m.group("Y")}的要紧{m.group("Z")}',
-            lambda m: f'{m.group("X")}作为{m.group("Y")}的关键{m.group("Z")}',
+            lambda m: f'{m.group("X")}作为{m.group("Y")}的核心{m.group("Z")}',
+            lambda m: f'{m.group("X")}构成了{m.group("Y")}的关键{m.group("Z")}',
         ]
     ))
 
@@ -501,8 +501,8 @@ def _build_templates():
     templates.append((
         re.compile(r'(?P<X>[^，,。]{2,15})起到了(?:重要|关键|核心|积极)(?P<Y>作用|影响|意义)'),
         [
-            lambda m: f'{m.group("X")}起了要紧的{m.group("Y")}',
-            lambda m: f'在这里，{m.group("X")}的{m.group("Y")}不小',
+            lambda m: f'{m.group("X")}发挥了核心的{m.group("Y")}',
+            lambda m: f'{m.group("X")}的{m.group("Y")}值得重视',
         ]
     ))
 
@@ -1425,6 +1425,9 @@ def insert_short_reactions(text, target_short_frac=None, max_per_paragraph=None,
     # essay-style text that happens to quote a source.
     if _dialogue_density(text) >= 0.08:
         return text
+    # Academic guard: 反应短语（一言难尽/颇有道理等）不适合学术论文
+    if scene == 'academic':
+        return text
     if target_short_frac is None:
         target_short_frac = _RCFG.get('reaction_target_short_frac_academic', 0.22) if scene == 'academic' else _RCFG.get('reaction_target_short_frac_general', 0.15)
     paragraphs = text.split('\n\n')
@@ -1688,7 +1691,10 @@ def deep_restructure(text, aggressive=False, scene='general'):
     delete_prob = _RCFG.get('deep_delete_prob_aggressive', 0.6) if aggressive else _RCFG.get('deep_delete_prob_normal', 0.35)
 
     # 1. 句式结构变换
-    text = restructure_sentences(text, strength=strength)
+    # NOTE: 学术场景下跳过句式重组模板，因为模板中包含大量口语化表达
+    # （"功不可没""靠的是""少不了""不可小觑"等），在论文中会破坏学术调性
+    if scene != 'academic':
+        text = restructure_sentences(text, strength=strength)
 
     # 2. 长句拆分（增强版：依存句法优先）
     text = split_long_sentences_v2(text)

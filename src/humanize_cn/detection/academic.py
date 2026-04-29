@@ -1081,7 +1081,8 @@ def humanize_academic(text, aggressive=False, seed=None, best_of_n=DEFAULT_BEST_
     text = _add_author_voice(text, aggressive)
 
     # 4. Inject hedging language
-    text = _inject_hedging(text, aggressive)
+    # NOTE: 学术论文中不注入hedging短语（"从某种角度看"等），效果适得其反
+    # text = _inject_hedging(text, aggressive)
 
     # 5. Break uniform structure
     text = _break_uniform_structure(text)
@@ -1121,18 +1122,30 @@ def humanize_academic(text, aggressive=False, seed=None, best_of_n=DEFAULT_BEST_
         text = _reduce_high_freq_bigrams(text, strength=bigram_strength, scene='academic')
 
     # Strategy 2 & 3: Noise injection (skipped with --no-noise)
-    if _USE_NOISE:
-        # Strategy 3: Noise expression injection (academic style — restrained)
-        if _inject_noise_expressions:
-            # ─── 从配置读取噪声密度 ───
-            _noise_a = _ACFG.get('noise_density_aggressive', 0.2)
-            _noise_n = _ACFG.get('noise_density', 0.18)
-            noise_density = _noise_a if aggressive else _noise_n
-            text = _inject_noise_expressions(text, density=noise_density, style='academic')
-        
+    # NOTE: 学术论文中不注入噪声短语，效果适得其反
+    # if _USE_NOISE:
+    #     if _inject_noise_expressions:
+    #         noise_density = ...
+    #         text = _inject_noise_expressions(text, density=noise_density, style='academic')
+
         # Strategy 2: Sentence length randomization
         if _randomize_sentence_lengths:
             text = _randomize_sentence_lengths(text, aggressive=aggressive, seed=seed)
+
+    # ── NEW: 定向改写策略（字符级操作，直接改变统计特征）──
+    try:
+        from ..rewriting.targeted import (
+            inject_low_freq_ngrams as _inject_ngrams,
+            targeted_structural_rewrite as _structural_rw,
+        )
+        # Strategy A: 低频 n-gram 注入 — 在低 perplexity 片段扩展表达
+        _ngram_max = _ACFG.get('targeted_ngram_max', 4)
+        text = _inject_ngrams(text, max_injections=_ngram_max, scene='academic')
+        # Strategy B: Perplexity 定向结构改写 — 对最 AI 的句子做结构重组
+        _struct_max = _ACFG.get('targeted_struct_max', 3)
+        text = _structural_rw(text, max_rewrites=_struct_max)
+    except ImportError:
+        pass
 
     # Clean up
     text = re.sub(r'[，,]{2,}', '，', text)

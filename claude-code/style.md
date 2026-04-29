@@ -14,14 +14,12 @@ Transform Chinese text into a specific writing style.
 
 1. Parse the style name (first argument) and the text (rest).
 
-2. Save and run (v3.0 automatically runs humanize first to strip AI words, then applies style):
+2. Save and run:
    ```bash
    cat > /tmp/style_input.txt << 'STY_EOF'
    [user's text here]
    STY_EOF
-   $SKILL_DIR/humanize style /tmp/style_input.txt --style [STYLE] -o /tmp/style_output.txt
-   # or:
-   python $SKILL_DIR/scripts/style_cn.py /tmp/style_input.txt --style [STYLE] -o /tmp/style_output.txt
+   cd $SKILL_DIR && PYTHONPATH=src python3 -m humanize_cn.interfaces.cli style /tmp/style_input.txt --style [STYLE] -o /tmp/style_output.txt
    ```
    Add `--no-humanize` to skip the humanize pre-pass.
 
@@ -38,12 +36,3 @@ Transform Chinese text into a specific writing style.
 | `academic` | 学术风格，严谨论述 |
 | `literary` | 文艺风格，优美散文 |
 | `weibo` | 微博风格，简短犀利 |
-
-## Example
-
-```
-/style xiaohongshu 在当今快节奏的生活中，时间管理具有至关重要的意义。
-```
-
-Output:
-> 姐妹们！说真的，时间管理这事我踩过太多坑了 😭
