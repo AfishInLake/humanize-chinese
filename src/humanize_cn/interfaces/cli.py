@@ -88,7 +88,7 @@ def _save_output(text, path):
 # ─── detect ───
 
 def _cmd_detect(argv):
-    from humanize_cn.detection.detect import (
+    from humanize_cn.check_pkg.detect import (
         detect_patterns, calculate_score, score_to_level,
         analyze_sentences, format_output,
     )
@@ -132,7 +132,7 @@ def _cmd_detect(argv):
 # ─── rewrite ───
 
 def _cmd_rewrite(argv):
-    from humanize_cn.rewriting.humanize import humanize
+    from humanize_cn.rewrite.humanize import humanize
 
     parser = argparse.ArgumentParser(prog='humanize rewrite', description='通用去 AI 味改写')
     parser.add_argument('file', nargs='?', help='输入文件路径')
@@ -162,7 +162,7 @@ def _cmd_rewrite(argv):
 # ─── academic ───
 
 def _cmd_academic(argv):
-    from humanize_cn.detection.academic import (
+    from humanize_cn.check_pkg.academic import (
         detect_academic, calculate_academic_score,
         humanize_academic, format_detect_output,
     )
@@ -219,7 +219,7 @@ def _cmd_academic(argv):
 # ─── style ───
 
 def _cmd_style(argv):
-    from humanize_cn.rewriting.style import apply_style, list_styles
+    from humanize_cn.rewrite.style import apply_style, list_styles
 
     parser = argparse.ArgumentParser(prog='humanize style', description='风格转换')
     parser.add_argument('file', nargs='?', help='输入文件路径')
@@ -248,10 +248,10 @@ def _cmd_style(argv):
 # ─── compare ───
 
 def _cmd_compare(argv):
-    from humanize_cn.detection.detect import (
+    from humanize_cn.check_pkg.detect import (
         detect_patterns, calculate_score, score_to_level,
     )
-    from humanize_cn.rewriting.humanize import humanize
+    from humanize_cn.rewrite.humanize import humanize
 
     parser = argparse.ArgumentParser(prog='humanize compare', description='改写前后对比')
     parser.add_argument('file', nargs='?', help='输入文件路径')

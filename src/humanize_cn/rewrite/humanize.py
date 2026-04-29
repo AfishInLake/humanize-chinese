@@ -1574,7 +1574,7 @@ def zipf_perturb(text, scene='general'):
 def _estimate_source_aiscore(text):
     """Quick pre-detect of how AI-like the input is. Returns 0-100 score or None."""
     try:
-        from ..detection.detect import detect_patterns, calculate_score
+        from ..check_pkg.detect import detect_patterns, calculate_score
     except ImportError:
         return None
     try:

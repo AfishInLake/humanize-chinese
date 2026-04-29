@@ -27,7 +27,7 @@ import json
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 from .humanize import humanize
-from ..detection.detect import detect_patterns, calculate_score
+from ..check_pkg.detect import detect_patterns, calculate_score
 from ..models.ngram import compute_lr_score, analyze_text
 
 

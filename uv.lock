@@ -281,6 +281,9 @@ dev = [
     { name = "torch" },
     { name = "transformers" },
 ]
+llm = [
+    { name = "httpx" },
+]
 train = [
     { name = "numpy" },
     { name = "onnx" },
@@ -293,6 +296,7 @@ train = [
 
 [package.metadata]
 requires-dist = [
+    { name = "httpx", marker = "extra == 'llm'", specifier = ">=0.24.0" },
     { name = "humanize-cn", extras = ["bert", "train"], marker = "extra == 'dev'" },
     { name = "jieba", specifier = ">=0.42.1" },
     { name = "numpy", marker = "extra == 'bert'", specifier = ">=1.24.0" },
@@ -306,7 +310,7 @@ requires-dist = [
     { name = "transformers", marker = "extra == 'bert'", specifier = ">=4.30.0" },
     { name = "transformers", marker = "extra == 'train'", specifier = ">=4.30.0" },
 ]
-provides-extras = ["bert", "train", "dev"]
+provides-extras = ["bert", "llm", "train", "dev"]
 
 [[package]]
 name = "idna"

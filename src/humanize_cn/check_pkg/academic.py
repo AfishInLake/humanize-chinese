@@ -1101,7 +1101,7 @@ def humanize_academic(text, aggressive=False, seed=None, best_of_n=DEFAULT_BEST_
     # Lazy-load rewriting functions to avoid circular import at module level
     global _reduce_high_freq_bigrams, _randomize_sentence_lengths, _inject_noise_expressions
     if _reduce_high_freq_bigrams is None:
-        from ..rewriting.humanize import (
+        from ..rewrite.humanize import (
             reduce_high_freq_bigrams as _rfb,
             randomize_sentence_lengths as _rsl,
             inject_noise_expressions as _ine,
@@ -1134,7 +1134,7 @@ def humanize_academic(text, aggressive=False, seed=None, best_of_n=DEFAULT_BEST_
 
     # ── NEW: 定向改写策略（字符级操作，直接改变统计特征）──
     try:
-        from ..rewriting.targeted import (
+        from ..rewrite.targeted import (
             inject_low_freq_ngrams as _inject_ngrams,
             targeted_structural_rewrite as _structural_rw,
         )
