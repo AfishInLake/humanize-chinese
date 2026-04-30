@@ -362,6 +362,15 @@ DEFAULTS = {
         "temperature": 0.8165,
         "ai_label_id": 1,
         "human_label_id": 0
+    },
+
+    # ─── ensemble 集成评分器参数 ───
+    "ensemble": {
+        "perturbation_enabled": True,
+        "n_perturbations": 5,
+        "replace_ratio": 0.1,
+        "curvature_n_positions": 20,
+        "model_path": "models/ensemble/xgb_model_cn.json",
     }
 }
 

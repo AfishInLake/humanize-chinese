@@ -11,9 +11,9 @@ Chinese Deep Restructuring Module v1.0
 import re
 import random
 import os
-import logging
+from loguru import logger
 
-logger = logging.getLogger(__name__)
+
 
 # ─── 配置加载 ───
 from ..config import load_config as _load_cfg
@@ -66,7 +66,7 @@ def _init_bert():
             _bert_tokenizer = AutoTokenizer.from_pretrained(model_name)
 
         if not os.path.exists(onnx_path):
-            logger.info("ONNX 模型文件不存在: %s，BERT 评分不可用，将降级为 perplexity", onnx_path)
+            logger.info("ONNX 模型文件不存在: {}，BERT 评分不可用，将降级为 perplexity", onnx_path)
             _bert_available = False
             return None, None
 
@@ -74,13 +74,13 @@ def _init_bert():
         sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         _onnx_session = ort.InferenceSession(onnx_path, sess_options)
         _bert_available = True
-        logger.info("BERT MLM ONNX 模型加载成功: %s", onnx_path)
+        logger.info("BERT MLM ONNX 模型加载成功: {}", onnx_path)
     except ImportError:
         _bert_available = False
         logger.info("onnxruntime/transformers 未安装，BERT 评分不可用，将降级为 perplexity")
     except Exception as e:
         _bert_available = False
-        logger.warning("BERT ONNX 模型加载失败: %s，将降级为 perplexity", e)
+        logger.warning("BERT ONNX 模型加载失败: {}，将降级为 perplexity", e)
 
     return (_bert_tokenizer, _onnx_session) if _bert_available else (None, None)
 
@@ -175,7 +175,7 @@ def bert_naturalness_score(sentence):
         return score
 
     except Exception as e:
-        logger.debug("BERT ONNX 评分异常: %s", e)
+        logger.debug("BERT ONNX 评分异常: {}", e)
         return float('inf')
 
 

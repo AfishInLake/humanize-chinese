@@ -1,0 +1,29 @@
+{
+  "baseline": {
+    "detection_rate": 91.0,
+    "mean_score": 78.95
+  },
+  "attacks": {
+    "synonym": {
+      "detection_rate": 87.0,
+      "mean_score": 77.28,
+      "drop": 4.0
+    },
+    "shuffle": {
+      "detection_rate": 89.0,
+      "mean_score": 78.51,
+      "drop": 2.0
+    },
+    "noise": {
+      "detection_rate": 87.0,
+      "mean_score": 76.37,
+      "drop": 4.0
+    },
+    "mixed": {
+      "detection_rate": 68.0,
+      "mean_score": 63.83,
+      "drop": 23.0
+    }
+  },
+  "n_samples": 100
+}

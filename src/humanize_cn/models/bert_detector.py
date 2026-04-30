@@ -15,10 +15,14 @@ ONNX 模型位于 bert_model_anx/ 目录。
 """
 
 import os
-import logging
+from loguru import logger
 import numpy as np
 
-logger = logging.getLogger(__name__)
+# 抑制 tokenizers 并行警告
+os.environ.setdefault('TOKENIZERS_PARALLELISM', 'false')
+
+# 抑制 transformers 未安装 backend 的警告
+os.environ.setdefault('TRANSFORMERS_NO_ADVISORY_WARNINGS', '1')
 
 # ─── 配置加载 ───
 from ..config import load_config as _load_cfg
@@ -47,6 +51,7 @@ def _init():
 
     enabled = _BDCFG.get('enabled', True)
     if not enabled:
+        print("[BERT] 配置中 bert_detector.enabled=False，跳过 BERT 检测")
         _available = False
         return False
 
@@ -58,7 +63,8 @@ def _init():
     onnx_path = os.path.join(model_dir, onnx_name)
 
     if not os.path.exists(onnx_path):
-        logger.info("BERT 检测器 ONNX 模型不存在: %s，将跳过 BERT 检测", onnx_path)
+        print(f"[BERT] ONNX 模型不存在: {onnx_path}")
+        logger.info("BERT 检测器 ONNX 模型不存在: {}，将跳过 BERT 检测", onnx_path)
         _available = False
         return False
 
@@ -78,14 +84,16 @@ def _init():
         _label_map = _parse_label_map(model_dir)
 
         _available = True
-        logger.info("BERT 检测器加载成功: %s", onnx_path)
+        logger.info("BERT 检测器加载成功: {}", onnx_path)
 
     except ImportError:
         _available = False
+        print("[BERT] onnxruntime 或 transformers 未安装")
         logger.info("onnxruntime/transformers 未安装，BERT 检测不可用")
     except Exception as e:
         _available = False
-        logger.warning("BERT 检测器加载失败: %s", e)
+        print(f"[BERT] 加载失败: {e}")
+        logger.warning("BERT 检测器加载失败: {}", e)
 
     return _available
 
@@ -180,7 +188,7 @@ def bert_detect_score(text, max_length=None):
         return score
 
     except Exception as e:
-        logger.debug("BERT 检测推理异常: %s", e)
+        logger.warning("BERT 检测推理异常: {}", e)
         return None
 
 

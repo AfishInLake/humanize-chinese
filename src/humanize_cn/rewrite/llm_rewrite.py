@@ -17,9 +17,7 @@
 import os
 import json
 import time
-import logging
-
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 # 加载 .env 文件
 def _load_dotenv():

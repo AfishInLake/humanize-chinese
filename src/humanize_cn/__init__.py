@@ -8,8 +8,8 @@
 import warnings
 warnings.filterwarnings('ignore', message='.*pkg_resources is deprecated.*')
 
-import logging
-logging.getLogger('jieba').setLevel(logging.WARNING)
+from loguru import logger
+logger.disable("jieba")
 
 __version__ = '0.1.0'
 

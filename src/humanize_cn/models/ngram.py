@@ -872,6 +872,146 @@ def compute_char_mattr(text, window=100):
     return sum(ratios) / len(ratios) if ratios else 0.0
 
 
+# ─── Word-level lexical diversity features (ensemble extension) ───
+
+# Built-in Chinese stopword set (no external dependency)
+_BUILTIN_STOPWORDS = frozenset({
+    '的', '了', '在', '是', '我', '有', '和', '就', '不', '人',
+    '都', '一', '一个', '上', '也', '很', '到', '说', '要', '去',
+    '你', '会', '着', '没有', '看', '好', '自己', '这', '他', '她',
+    '它', '们', '那', '些', '什么', '如何', '可以', '因为', '所以',
+    '但是', '然而', '因此', '此外', '同时', '并且', '或者', '如果',
+    '虽然', '尽管', '关于', '通过', '进行', '以及', '其中', '对于',
+    '作为', '以', '及', '等', '等等', '之', '其', '与', '或', '而',
+    '且', '则', '乃', '于', '从', '向', '为', '被', '把', '将',
+    '给', '比', '让', '由', '这个', '那个', '这些', '那些', '没',
+    '能', '得', '地', '来', '去', '过', '吧', '吗', '呢', '啊',
+})
+
+
+def compute_word_ttr(text):
+    """Word-level Type-Token Ratio using jieba.
+
+    AI text tends to use more common word combinations, resulting in lower TTR.
+    Returns 0.0 if jieba is unavailable or text too short.
+    """
+    try:
+        import jieba
+    except ImportError:
+        return 0.0
+    words = [w for w in jieba.cut(text) if w.strip() and len(w) > 1]
+    if not words:
+        return 0.0
+    return len(set(words)) / len(words)
+
+
+def compute_word_mattr(text, window=50):
+    """Word-level Moving-Average TTR.
+
+    More robust than global TTR — not affected by text length.
+    Returns 0.0 if jieba unavailable or text shorter than window.
+    """
+    try:
+        import jieba
+    except ImportError:
+        return 0.0
+    words = [w for w in jieba.cut(text) if w.strip() and len(w) > 1]
+    if len(words) < window:
+        return 0.0
+    step = max(1, window // 2)
+    ratios = []
+    for i in range(0, len(words) - window + 1, step):
+        seg = words[i:i + window]
+        ratios.append(len(set(seg)) / len(seg))
+    return sum(ratios) / len(ratios) if ratios else 0.0
+
+
+def compute_hapax_ratio(text):
+    """Hapax legomena ratio — fraction of words appearing exactly once.
+
+    Human writing typically has more one-time-use words.
+    Returns 0.0 if jieba unavailable.
+    """
+    try:
+        import jieba
+    except ImportError:
+        return 0.0
+    words = [w for w in jieba.cut(text) if w.strip() and len(w) > 1]
+    if not words:
+        return 0.0
+    counts = {}
+    for w in words:
+        counts[w] = counts.get(w, 0) + 1
+    once = sum(1 for c in counts.values() if c == 1)
+    return once / len(words)
+
+
+def compute_stopword_ratio(text):
+    """Stopword ratio — fraction of words that are function words.
+
+    AI text tends to use more connective/formal function words.
+    Uses built-in stopword set (no external file dependency).
+    Returns 0.0 if jieba unavailable.
+    """
+    try:
+        import jieba
+    except ImportError:
+        return 0.0
+    words = [w for w in jieba.cut(text) if w.strip()]
+    if not words:
+        return 0.0
+    return sum(1 for w in words if w in _BUILTIN_STOPWORDS) / len(words)
+
+
+# ─── Structural features (ensemble extension) ───
+
+def compute_paragraph_length_features(text):
+    """Paragraph-level structural features.
+
+    AI text has more uniform paragraph lengths.
+    Returns dict with n_paragraphs, para_len_cv, para_len_range_ratio.
+    """
+    paragraphs = [p.strip() for p in re.split(r'\n\s*\n|\n', text)
+                  if p.strip() and len(p.strip()) > 10]
+    if len(paragraphs) < 2:
+        return {'n_paragraphs': len(paragraphs), 'para_len_cv': 0.0,
+                'para_len_range_ratio': 0.0}
+    lengths = [len(p) for p in paragraphs]
+    mean_l = sum(lengths) / len(lengths)
+    if mean_l == 0:
+        return {'n_paragraphs': len(paragraphs), 'para_len_cv': 0.0,
+                'para_len_range_ratio': 0.0}
+    var = sum((l - mean_l) ** 2 for l in lengths) / len(lengths)
+    cv = (var ** 0.5) / mean_l
+    range_ratio = (max(lengths) - min(lengths)) / mean_l
+    return {'n_paragraphs': len(paragraphs), 'para_len_cv': cv,
+            'para_len_range_ratio': range_ratio}
+
+
+def compute_repetition_features(text):
+    """Repeated n-gram features.
+
+    AI text sometimes shows unnatural repetition patterns.
+    Returns dict with bigram_repeat_ratio, trigram_repeat_ratio.
+    """
+    chars = [c for c in text if '\u4e00' <= c <= '\u9fff']
+    if len(chars) < 50:
+        return {'bigram_repeat_ratio': 0.0, 'trigram_repeat_ratio': 0.0}
+    counts = {}
+    bigrams = [chars[i] + chars[i+1] for i in range(len(chars)-1)]
+    trigrams = [chars[i] + chars[i+1] + chars[i+2] for i in range(len(chars)-2)]
+    bi_counts = {}
+    tri_counts = {}
+    for bg in bigrams:
+        bi_counts[bg] = bi_counts.get(bg, 0) + 1
+    for tg in trigrams:
+        tri_counts[tg] = tri_counts.get(tg, 0) + 1
+    # Repeat ratio: fraction of ngrams appearing >1 time
+    bi_repeat = sum(c for c in bi_counts.values() if c > 1) / len(bigrams) if bigrams else 0.0
+    tri_repeat = sum(c for c in tri_counts.values() if c > 1) / len(trigrams) if trigrams else 0.0
+    return {'bigram_repeat_ratio': bi_repeat, 'trigram_repeat_ratio': tri_repeat}
+
+
 # ─── Burstiness ───
 
 def compute_burstiness(text, window_size=None):
@@ -1087,6 +1227,16 @@ def analyze_text(text):
     # Char-level MATTR (E-8, arxiv 2507.15092 PATTR-lite)
     char_mattr = compute_char_mattr(text, window=100)
 
+    # Word-level lexical diversity (ensemble extension)
+    word_ttr = compute_word_ttr(text)
+    word_mattr = compute_word_mattr(text, window=50)
+    hapax_ratio = compute_hapax_ratio(text)
+    stopword_ratio = compute_stopword_ratio(text)
+
+    # Structural features (ensemble extension)
+    para_len = compute_paragraph_length_features(text)
+    repetition = compute_repetition_features(text)
+
     # F-path multi-scale: unigram ppl and its ratio to trigram ppl.
     # HC3 pilot: uni_ppl alone d=0.08, uni/tri_ratio d=0.31 (AI concentrates
     # common chars differently from humans, most visible in the ratio).
@@ -1221,9 +1371,19 @@ def analyze_text(text):
         'wiki': wiki,
         'news': news,
         'char_mattr': char_mattr,
+        'word_ttr': word_ttr,
+        'word_mattr': word_mattr,
+        'hapax_ratio': hapax_ratio,
+        'stopword_ratio': stopword_ratio,
+        'para_len': para_len,
+        'repetition': repetition,
         'uni_ppl': uni_ppl,
         'uni_tri_ratio': uni_tri_ratio,
         'indicators': indicators,
+        # Token-level and perturbation data (populated by analyze_text_extended
+        # or ensemble_scorer; defaults to empty dicts here for backward compat)
+        'token_ppl_data': {},
+        'perturb_data': {},
         'details': {
             'perplexity_result': {
                 'perplexity': ppl_result['perplexity'],
@@ -1270,6 +1430,31 @@ LR_FEATURE_NAMES = (
     'wiki_vs_human',        # F-3 2026-04-22, HC3 d=1.58
     'wiki_vs_primary',      # F-3 2026-04-22, HC3 d=1.13
     'news_vs_human',        # F-11 2026-04-22, HC3 d=1.20 (on 10-category news corpus)
+)
+
+# Extended feature names for ensemble classifier (XGBoost/RF).
+# Appends word-level, structural, token-level, and perturbation features
+# to the original 22-dimension LR feature vector.
+EXTENDED_FEATURE_NAMES = LR_FEATURE_NAMES + (
+    # Word-level lexical diversity (4 dims)
+    'word_ttr',
+    'word_mattr',
+    'hapax_ratio',
+    'stopword_ratio',
+    # Structural features (3 dims)
+    'para_len_cv',
+    'para_len_range_ratio',
+    'bigram_repeat_ratio',
+    # Token-level probability features (5 dims) — from token_ppl module
+    'token_ppl',
+    'token_logprob_std',
+    'token_logprob_skew',
+    'token_top1_acc',
+    'cross_sent_ppl',
+    # Perturbation features (3 dims) — from perturbation module
+    'perturb_sensitivity',
+    'perturb_std',
+    'local_curv_v2',
 )
 
 
@@ -1371,15 +1556,20 @@ def compute_lr_score(text_or_analysis, coef_path=None, scene='general'):
     }
 
 
-def extract_feature_vector(text_or_analysis):
-    """Flatten analyze_text output into a fixed-length 18-feature vector for LR.
+def extract_feature_vector(text_or_analysis, version='extended'):
+    """Flatten analyze_text output into a fixed-length feature vector.
 
     Accepts either raw text (re-runs analyze_text) or a pre-computed analysis
     dict (saves one full pass when upstream already has it).
 
-    Returns (vector, names) where vector is list of 18 floats in LR_FEATURE_NAMES
-    order. All features are continuous; missing/unavailable features default to
-    0.0 (e.g., Binoculars returns 0 when secondary ngram file absent).
+    Args:
+        text_or_analysis: raw text string or pre-computed analysis dict
+        version: 'extended' (default, 37 dims for XGBoost/RF) or
+                 'legacy' (22 dims for backward-compatible LR)
+
+    Returns (vector, names) where vector is list of floats in the
+    corresponding FEATURE_NAMES order. All features are continuous;
+    missing/unavailable features default to 0.0.
     """
     if isinstance(text_or_analysis, str):
         analysis = analyze_text(text_or_analysis)
@@ -1397,6 +1587,7 @@ def extract_feature_vector(text_or_analysis):
     wiki = analysis.get('wiki', {}) or {}
     news = analysis.get('news', {}) or {}
 
+    # Base 22-dimension vector (same as before)
     vec = [
         float(analysis.get('perplexity') or 0.0),
         float(analysis.get('burstiness') or 0.0),
@@ -1421,7 +1612,45 @@ def extract_feature_vector(text_or_analysis):
         float(wiki.get('wiki_vs_primary') or 0.0),
         float(news.get('news_vs_human') or 0.0),
     ]
-    return vec, list(LR_FEATURE_NAMES)
+
+    if version == 'legacy':
+        return vec, list(LR_FEATURE_NAMES)
+
+    # Extended features (15 additional dimensions)
+    para_len = analysis.get('para_len', {}) or {}
+    repetition = analysis.get('repetition', {}) or {}
+
+    # Word-level lexical diversity
+    vec.extend([
+        float(analysis.get('word_ttr') or 0.0),
+        float(analysis.get('word_mattr') or 0.0),
+        float(analysis.get('hapax_ratio') or 0.0),
+        float(analysis.get('stopword_ratio') or 0.0),
+        # Structural
+        float(para_len.get('para_len_cv') or 0.0),
+        float(para_len.get('para_len_range_ratio') or 0.0),
+        float(repetition.get('bigram_repeat_ratio') or 0.0),
+    ])
+
+    # Token-level probability features (from token_ppl module)
+    token_ppl_data = analysis.get('token_ppl_data', {}) or {}
+    vec.extend([
+        float(token_ppl_data.get('token_ppl') or 0.0),
+        float(token_ppl_data.get('token_logprob_std') or 0.0),
+        float(token_ppl_data.get('token_logprob_skew') or 0.0),
+        float(token_ppl_data.get('token_top1_acc') or 0.0),
+        float(token_ppl_data.get('cross_sent_ppl') or 0.0),
+    ])
+
+    # Perturbation features (from perturbation module)
+    perturb_data = analysis.get('perturb_data', {}) or {}
+    vec.extend([
+        float(perturb_data.get('perturb_sensitivity') or 0.0),
+        float(perturb_data.get('perturb_std') or 0.0),
+        float(perturb_data.get('local_curv_v2') or 0.0),
+    ])
+
+    return vec, list(EXTENDED_FEATURE_NAMES)
 
 
 # ─── CLI ───

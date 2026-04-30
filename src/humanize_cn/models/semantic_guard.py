@@ -18,9 +18,9 @@
 
 import os
 import numpy as np
-import logging
+from loguru import logger
 
-logger = logging.getLogger(__name__)
+
 
 # ─── 配置加载 ───
 from ..config import load_config as _load_cfg
@@ -47,7 +47,7 @@ def _init_onnx():
         return _ONNX_AVAILABLE
 
     if not os.path.exists(_ONNX_MODEL_PATH):
-        logger.info("语义保镖 ONNX 模型不存在: %s，将跳过语义检查", _ONNX_MODEL_PATH)
+        logger.info("语义保镖 ONNX 模型不存在: {}，将跳过语义检查", _ONNX_MODEL_PATH)
         _ONNX_AVAILABLE = False
         return False
 
@@ -67,14 +67,14 @@ def _init_onnx():
         _ONNX_SESSION = ort.InferenceSession(_ONNX_MODEL_PATH, sess_options)
 
         _ONNX_AVAILABLE = True
-        logger.info("语义保镖加载成功: %s", _ONNX_MODEL_PATH)
+        logger.info("语义保镖加载成功: {}", _ONNX_MODEL_PATH)
 
     except ImportError:
         _ONNX_AVAILABLE = False
         logger.info("onnxruntime/transformers 未安装，语义保镖不可用")
     except Exception as e:
         _ONNX_AVAILABLE = False
-        logger.warning("语义保镖加载失败: %s", e)
+        logger.warning("语义保镖加载失败: {}", e)
 
     return _ONNX_AVAILABLE
 
@@ -144,7 +144,7 @@ def _get_embeddings(text):
         return cls_embedding
 
     except Exception as e:
-        logger.debug("语义保镖 embedding 提取异常: %s", e)
+        logger.debug("语义保镖 embedding 提取异常: {}", e)
         return None
 
 

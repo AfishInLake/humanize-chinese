@@ -268,57 +268,13 @@ def load_data_from_hc3_jsonl(filepath):
     return texts, labels
 
 
-def load_all_data(data_dir, min_chars=10):
-    """从 data_dir 加载所有可用数据。
+def load_jsonl_file(filepath, min_chars=10):
+    """从 JSONL 文件加载数据并清洗。
 
-    按以下优先级尝试:
-    1. data.jsonl（标准格式）
-    2. data.csv
-    3. ai_texts/ + human_texts/ 目录结构
-    4. hc3_all.jsonl（HC3 原始格式）
-
-    Args:
-        data_dir:   数据目录路径
-        min_chars:  文本最小字符数（低于此值的文本将被过滤）
-
-    Returns:
-        (texts, labels) 清洗后的数据
+    格式: 每行 {"text": "...", "label": 0 或 1}
     """
-    data_path = Path(data_dir)
+    texts, labels = load_data_from_jsonl(str(filepath))
 
-    # 尝试标准 JSONL 格式
-    jsonl_path = data_path / "data.jsonl"
-    if jsonl_path.exists():
-        print(f"[数据] 从 {jsonl_path} 加载标准 JSONL 格式...")
-        texts, labels = load_data_from_jsonl(str(jsonl_path))
-
-    # 尝试 CSV 格式
-    elif (data_path / "data.csv").exists():
-        print(f"[数据] 从 {data_path / 'data.csv'} 加载 CSV 格式...")
-        texts, labels = load_data_from_csv(str(data_path / "data.csv"))
-
-    # 尝试 HC3 原始格式
-    elif (data_path / "hc3_all.jsonl").exists():
-        print(f"[数据] 从 {data_path / 'hc3_all.jsonl'} 加载 HC3 原始格式...")
-        texts, labels = load_data_from_hc3_jsonl(str(data_path / "hc3_all.jsonl"))
-
-    # 尝试目录结构
-    elif (data_path / "ai_texts").is_dir() or (data_path / "human_texts").is_dir():
-        print(f"[数据] 从目录结构加载 (ai_texts/ + human_texts/)...")
-        texts, labels = load_data_from_directories(str(data_path))
-
-    else:
-        raise FileNotFoundError(
-            f"在 {data_dir} 中未找到可用数据。\n"
-            f"请确保存在以下之一:\n"
-            f"  - data.jsonl  (每行 {{\"text\": \"...\", \"label\": 0/1}})\n"
-            f"  - data.csv    (text, label 两列)\n"
-            f"  - hc3_all.jsonl (HC3 原始格式)\n"
-            f"  - ai_texts/ + human_texts/ 目录"
-        )
-
-    # 数据清洗
-    print(f"[数据] 原始数据量: {len(texts)} 条")
     cleaned_texts, cleaned_labels = [], []
     for text, label in zip(texts, labels):
         text = clean_text(text)
@@ -326,16 +282,50 @@ def load_all_data(data_dir, min_chars=10):
             cleaned_texts.append(text)
             cleaned_labels.append(label)
 
-    n_removed = len(texts) - len(cleaned_texts)
-    if n_removed > 0:
-        print(f"[数据] 清洗后移除 {n_removed} 条（空文本或过短）")
-
-    # 统计类别分布
-    n_ai = sum(1 for l in cleaned_labels if l == 1)
-    n_human = sum(1 for l in cleaned_labels if l == 0)
-    print(f"[数据] 清洗后数据量: {len(cleaned_texts)} 条 (AI: {n_ai}, Human: {n_human})")
-
     return cleaned_texts, cleaned_labels
+
+
+def load_all_data(data_dir, min_chars=10):
+    """从 data_dir 加载已划分好的训练集和测试集。
+
+    读取 prepare_training_data.py 输出的 train.jsonl 和 test.jsonl。
+
+    Args:
+        data_dir:   数据目录路径
+        min_chars:  文本最小字符数
+
+    Returns:
+        (train_texts, train_labels, test_texts, test_labels)
+    """
+    data_path = Path(data_dir)
+
+    train_path = data_path / "train.jsonl"
+    test_path = data_path / "test.jsonl"
+
+    if not train_path.exists():
+        raise FileNotFoundError(
+            f"未找到训练数据文件: {train_path}\n"
+            f"请先运行: python scripts/prepare_training_data.py"
+        )
+    if not test_path.exists():
+        raise FileNotFoundError(
+            f"未找到测试数据文件: {test_path}\n"
+            f"请先运行: python scripts/prepare_training_data.py"
+        )
+
+    print(f"[数据] 从 {train_path} 加载训练集...")
+    train_texts, train_labels = load_jsonl_file(train_path, min_chars)
+    n_ai = sum(1 for l in train_labels if l == 1)
+    n_human = sum(1 for l in train_labels if l == 0)
+    print(f"[数据] 训练集: {len(train_texts)} 条 (AI: {n_ai}, Human: {n_human})")
+
+    print(f"[数据] 从 {test_path} 加载测试集...")
+    test_texts, test_labels = load_jsonl_file(test_path, min_chars)
+    n_ai = sum(1 for l in test_labels if l == 1)
+    n_human = sum(1 for l in test_labels if l == 0)
+    print(f"[数据] 测试集: {len(test_texts)} 条 (AI: {n_ai}, Human: {n_human})")
+
+    return train_texts, train_labels, test_texts, test_labels
 
 
 # ============================================================
@@ -479,43 +469,34 @@ def train_model(
         print(f"[设备] GPU: {torch.cuda.get_device_name(0)}")
         print(f"[设备] GPU 显存: {torch.cuda.get_device_properties(0).total_mem / 1e9:.1f} GB")
 
-    # ─── 加载数据 ───
+    # ─── 加载数据（已划分好的 train/test）───
     print(f"\n{'='*60}")
     print("[步骤 1/5] 加载训练数据")
     print(f"{'='*60}")
-    texts, labels = load_all_data(data_dir)
+    train_texts, train_labels, test_texts, test_labels = load_all_data(data_dir)
 
     # 快速测试模式：每类只取 50 条
     if quick:
-        ai_indices = [i for i, l in enumerate(labels) if l == 1]
-        human_indices = [i for i, l in enumerate(labels) if l == 0]
-        rng = random.Random(seed)
-        rng.shuffle(ai_indices)
-        rng.shuffle(human_indices)
-        n_per_class = min(50, len(ai_indices), len(human_indices))
-        selected = ai_indices[:n_per_class] + human_indices[:n_per_class]
-        texts = [texts[i] for i in selected]
-        labels = [labels[i] for i in selected]
-        print(f"[快速模式] 采样 {len(texts)} 条数据用于快速测试")
-
-    # ─── 数据划分 ───
-    print(f"\n{'='*60}")
-    print("[步骤 2/5] 划分训练集 / 测试集")
-    print(f"{'='*60}")
-
-    train_texts, test_texts, train_labels, test_labels = train_test_split(
-        texts,
-        labels,
-        test_size=0.2,
-        random_state=seed,
-        stratify=labels,
-    )
-    print(f"训练集: {len(train_texts)} 条")
-    print(f"测试集: {len(test_texts)} 条")
+        for name, texts_ref, labels_ref in [("训练集", train_texts, train_labels),
+                                             ("测试集", test_texts, test_labels)]:
+            ai_idx = [i for i, l in enumerate(labels_ref) if l == 1]
+            human_idx = [i for i, l in enumerate(labels_ref) if l == 0]
+            rng = random.Random(seed)
+            rng.shuffle(ai_idx)
+            rng.shuffle(human_idx)
+            n = min(50, len(ai_idx), len(human_idx))
+            selected = ai_idx[:n] + human_idx[:n]
+            if name == "训练集":
+                train_texts = [texts_ref[i] for i in selected]
+                train_labels = [labels_ref[i] for i in selected]
+            else:
+                test_texts = [texts_ref[i] for i in selected]
+                test_labels = [labels_ref[i] for i in selected]
+        print(f"[快速模式] 训练集 {len(train_texts)} 条，测试集 {len(test_texts)} 条")
 
     # ─── 加载 Tokenizer 和模型 ───
     print(f"\n{'='*60}")
-    print("[步骤 3/5] 初始化模型")
+    print("[步骤 2/5] 初始化模型")
     print(f"{'='*60}")
 
     model_name = "bert-base-chinese"
